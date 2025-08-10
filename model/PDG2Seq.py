@@ -64,7 +64,7 @@ class PDG2Seq_Encoder(nn.Module):
                                                   num_hyper_edges=self.num_hyper_edges))
 
         # Add temporal embedding and self-attention
-        self.temporal_emb = TemporalEmbedding(time_dim=288, dow_dim=7, emb_dim=embed_dim)
+        self.temporal_emb = TemporalEmbedding(time_dim=48, dow_dim=7, emb_dim=embed_dim)
         self.temporal_attn = TemporalSelfAttention(hidden_dim=dim_out)
 
     def forward(self, x, init_state, node_embeddings):
@@ -77,7 +77,7 @@ class PDG2Seq_Encoder(nn.Module):
         x_input = x[..., :self.input_dim]  # (B, T, N, input_dim)
         tod = x[..., -2].long()           # (B, T, N)
         dow = x[..., -1].long()           # (B, T, N)
-        tod_onehot = F.one_hot(tod, num_classes=288).float()
+        tod_onehot = F.one_hot(tod, num_classes=48).float()
         dow_onehot = F.one_hot(dow, num_classes=7).float()
         tod_emb, dow_emb = self.temporal_emb(tod_onehot, dow_onehot)  # (B, T, N, emb_dim)
         # Concatenate temporal embeddings to input
@@ -127,7 +127,7 @@ class PDG2Seq_Dncoder(nn.Module):
                                                   use_interactive=self.use_interactive,
                                                   num_hyper_edges=self.num_hyper_edges))
 
-        self.temporal_emb = TemporalEmbedding(time_dim=288, dow_dim=7, emb_dim=embed_dim)
+        self.temporal_emb = TemporalEmbedding(time_dim=48, dow_dim=7, emb_dim=embed_dim)
         self.temporal_attn = TemporalSelfAttention(hidden_dim=dim_out)
 
     def forward(self, xt, init_state, node_embeddings):
@@ -139,7 +139,7 @@ class PDG2Seq_Dncoder(nn.Module):
         x_input = xt[..., :self.input_dim]  # (B, N, input_dim)
         tod = xt[..., -2].long()           # (B, N)
         dow = xt[..., -1].long()           # (B, N)
-        tod_onehot = F.one_hot(tod, num_classes=288).float()
+        tod_onehot = F.one_hot(tod, num_classes=48).float()
         dow_onehot = F.one_hot(dow, num_classes=7).float()
         tod_emb, dow_emb = self.temporal_emb(tod_onehot.unsqueeze(1), dow_onehot.unsqueeze(1))  # (B, 1, N, emb_dim)
         tod_emb = tod_emb.squeeze(1)
@@ -169,9 +169,9 @@ class PDG2Seq(nn.Module):
         self.use_W = args.use_week
         self.cl_decay_steps = args.lr_decay_step
         self.node_embeddings1 = nn.Parameter(torch.empty(self.num_node, args.embed_dim))
-        self.T_i_D_emb1 = nn.Parameter(torch.empty(288, args.time_dim))
+        self.T_i_D_emb1 = nn.Parameter(torch.empty(48, args.time_dim))
         self.D_i_W_emb1 = nn.Parameter(torch.empty(7, args.time_dim))
-        self.T_i_D_emb2 = nn.Parameter(torch.empty(288, args.time_dim))
+        self.T_i_D_emb2 = nn.Parameter(torch.empty(48, args.time_dim))
         self.D_i_W_emb2 = nn.Parameter(torch.empty(7, args.time_dim))
 
         self.encoder = PDG2Seq_Encoder(
@@ -205,12 +205,12 @@ class PDG2Seq(nn.Module):
 
         t_i_d_data1 = source[..., 0,-2]
         t_i_d_data2 = traget[..., 0,-2]
-        # T_i_D_emb = self.T_i_D_emb[(t_i_d_data[:, -1, :] * 288).type(torch.LongTensor)]
-        T_i_D_emb1_en = self.T_i_D_emb1[(t_i_d_data1 * 288).type(torch.LongTensor)]
-        T_i_D_emb2_en = self.T_i_D_emb2[(t_i_d_data1 * 288).type(torch.LongTensor)]
+        # T_i_D_emb = self.T_i_D_emb[(t_i_d_data[:, -1, :] * 48).type(torch.LongTensor)]
+        T_i_D_emb1_en = self.T_i_D_emb1[(t_i_d_data1 * 48).type(torch.LongTensor)]
+        T_i_D_emb2_en = self.T_i_D_emb2[(t_i_d_data1 * 48).type(torch.LongTensor)]
 
-        T_i_D_emb1_de = self.T_i_D_emb1[(t_i_d_data2 * 288).type(torch.LongTensor)]
-        T_i_D_emb2_de = self.T_i_D_emb2[(t_i_d_data2 * 288).type(torch.LongTensor)]
+        T_i_D_emb1_de = self.T_i_D_emb1[(t_i_d_data2 * 48).type(torch.LongTensor)]
+        T_i_D_emb2_de = self.T_i_D_emb2[(t_i_d_data2 * 48).type(torch.LongTensor)]
         if self.use_W:
             d_i_w_data1 = source[..., 0,-1]
             d_i_w_data2 = traget[..., 0,-1]
