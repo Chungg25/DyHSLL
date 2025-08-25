@@ -61,9 +61,9 @@ def get_dataloader(data, tod=True, dow=True, single=True):
     print('Val: ', x_val.shape, y_val.shape)
     print('Test: ', x_test.shape, y_test.shape)
 
-    np.savez('data/NYC-Taxi/train.npz', x=x_train, y=y_train)
-    np.savez('data/NYC-Taxi/val.npz', x=x_val, y=y_val)
-    np.savez('data/NYC-Taxi/test.npz', x=x_test, y=y_test)
+    np.savez('NYC/train.npz', x=x_train, y=y_train)
+    np.savez('NYC/val.npz', x=x_val, y=y_val)
+    np.savez('NYC/test.npz', x=x_test, y=y_test)
 
 def create_data(file_path):
     df = h5py.File(file_path, 'r')
@@ -75,4 +75,4 @@ def create_data(file_path):
     data = np.stack(rawdata, -1)
     get_dataloader(data)
 
-create_data('data/NYC-Taxi/NYC-Taxi.h5')
+create_data('NYC/NYC-Taxi.h5')
