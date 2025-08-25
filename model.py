@@ -15,12 +15,11 @@ class FullModel(nn.Module):
         self.node_embedding = nn.Embedding(args.num_nodes, args.hidden_dim)
         self.input_embedding = nn.Sequential(nn.Linear(args.in_dim, args.hidden_dim), nn.ReLU())
         self.main_model = MainModel(args, adj=args.predefined_adj)
-        # Dự đoán 2 giá trị (pick, drop) cho mỗi node mỗi bước
         self.pred_head = nn.Sequential(
-            nn.Linear(args.main_output_dim + args.seq_out_len * 2, args.hidden_dim),
+            nn.Linear(args.main_output_dim + 5 * 12, args.hidden_dim),
             nn.Dropout(args.dropout),
             nn.ReLU(),
-            nn.Linear(args.hidden_dim, args.seq_out_len * 2)
+            nn.Linear(args.hidden_dim, args.seq_out_len)
         )
 
     def forward(self, data):
@@ -36,19 +35,13 @@ class FullModel(nn.Module):
 
         out_feat = self.main_model(feature)  # B x N x nD
 
-        # Lấy pick, drop cho tất cả các bước thời gian
-        future_feature = data['target'][:, :, :, :2]  # [B, T, N, 2]
-        future_feature = future_feature.transpose(1, 2).reshape(self.args.batch_size, self.args.num_nodes, self.args.seq_out_len * 2)
+        future_feature = data['target'][:, :, :, -5:].transpose(1, 2).reshape(self.args.batch_size, self.args.num_nodes, -1)
         if self.args.feat_off == 1:
             future_feature = self.args.scaler.transform(future_feature)
         else:
             future_feature = self.args.scaler[0].transform(future_feature)
-        prediction = self.pred_head(torch.cat([out_feat, future_feature], dim=-1))  # B x N x (T*2)
-        batch_size = prediction.shape[0]
-        num_nodes = prediction.shape[1]
-        prediction = prediction.view(batch_size, num_nodes, self.args.seq_out_len, 2)
-        # Output is already [B, T, N, 2], no need to permute
-        prediction = prediction.contiguous()  # B x T x N x 2
+        prediction = self.pred_head(torch.cat([out_feat, future_feature], dim=-1))  # B x N x T
+        prediction = prediction.transpose(1, 2).unsqueeze(-1)  # B x T x N x 1
         return prediction
 
 

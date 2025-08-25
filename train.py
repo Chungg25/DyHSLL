@@ -40,13 +40,13 @@ parser.add_argument('--biscale', type=str_to_bool, default=False)
 # running params
 parser.add_argument('--seed', type=int, default=0)
 parser.add_argument('--runs', type=int, default=1, help='number of runs')
-parser.add_argument('--tolerance', type=int, default=100, help='tolerance for earlystopping')
+parser.add_argument('--tolerance', type=int, default=30, help='tolerance for earlystopping')
 parser.add_argument('--device', type=str, default='cuda:0', help='')
 parser.add_argument('--batch_size', type=int, default=32, help='batch size')
 parser.add_argument('--learning_rate', type=float, default=0.001, help='learning rate')
 parser.add_argument('--weight_decay', type=float, default=0.0001, help='weight decay rate')
 parser.add_argument('--clip', type=int, default=5, help='clip')
-parser.add_argument('--epochs', type=int, default=30, help='')
+parser.add_argument('--epochs', type=int, default=300, help='')
 
 # logging params
 parser.add_argument('--print_every', type=int, default=1, help='')
