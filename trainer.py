@@ -34,17 +34,17 @@ class Trainer():
         }
         output = self.model(data)
 
-        print(output.shape, real_val.shape)
+        # print(output.shape, real_val.shape)
 
         output = output.transpose(1, 3)
         real = torch.unsqueeze(real_val.transpose(1, 2), dim=1)
-        print(output.shape, real.shape)
+        # print(output.shape, real.shape)
         if self.args.feat_off == 1:
             predict = self.scaler.inverse_transform(output)
         else:
             predict = self.scaler[0].inverse_transform(output)
 
-        print(predict.shape, real.shape)
+        # print(predict.shape, real.shape)
         mae = torch.abs(predict - real).mean()
         rmse = ((predict - real) ** 2).mean() ** 0.5
         mape = util.masked_mape(predict, real, 0)
