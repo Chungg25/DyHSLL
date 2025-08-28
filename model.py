@@ -5,6 +5,25 @@ import torch.nn.functional as F
 from util import norm_adj
 from backbone import GNNLayer
 
+# --- Hyperedge Weight Optimization ---
+class HyperedgeWeightOptimizer(nn.Module):
+    def __init__(self, num_edges):
+        super().__init__()
+        self.weights = nn.Parameter(torch.ones(num_edges) / num_edges, requires_grad=True)
+    def forward(self):
+        w = F.softmax(self.weights, dim=0)
+        return w
+
+# --- Vertex Weight Optimization ---
+class VertexWeightOptimizer(nn.Module):
+    def __init__(self, num_nodes):
+        super().__init__()
+        self.weights = nn.Parameter(torch.ones(num_nodes) / num_nodes, requires_grad=True)
+    def forward(self):
+        u = F.softmax(self.weights, dim=0)
+        return u
+
+# --- Dynamic Hypergraph Structure Optimization ---
 class DynamicHypergraphStructure(nn.Module):
     def __init__(self, num_nodes, num_edges):
         super().__init__()
@@ -13,6 +32,7 @@ class DynamicHypergraphStructure(nn.Module):
         H_proj = torch.clamp(self.H, 0, 1)
         return H_proj
 
+# --- Temporal Self-attention (Transformer) ---
 class TemporalSelfAttention(nn.Module):
     def __init__(self, hidden_dim):
         super().__init__()
@@ -31,6 +51,39 @@ class TemporalSelfAttention(nn.Module):
         Z = Z.reshape(B, T, N, D)
         return Z
 
+# --- DTW clustering (pseudo, replace with actual DTW) ---
+def dtw_clustering(time_series, num_clusters):
+    N = time_series.shape[0]
+    H_sim = torch.zeros(N, num_clusters, device=time_series.device)
+    cluster_idx = torch.randint(0, num_clusters, (N,), device=time_series.device)
+    for i in range(N):
+        H_sim[i, cluster_idx[i]] = 1
+    return H_sim
+
+class HypergraphLearning(nn.Module):
+    def __init__(self, args, num_edges):
+        super(HypergraphLearning, self).__init__()
+        self.args = args
+        self.num_edges = num_edges
+        self.edge_clf = torch.randn(args.hidden_dim, self.num_edges) / math.sqrt(self.num_edges)
+        self.edge_clf = nn.Parameter(self.edge_clf, requires_grad=True)
+        self.edge_map = torch.randn(self.num_edges, self.num_edges) / math.sqrt(self.num_edges)
+        self.edge_map = nn.Parameter(self.edge_map, requires_grad=True)
+        self.activation = nn.ReLU()
+        self.norm = nn.LayerNorm(args.hidden_dim)
+
+    def forward(self, x):  # B x T x N x D
+        feat = x.reshape(x.size(0), -1, x.size(3))
+        hyper_assignment = torch.softmax(feat @ self.edge_clf, dim=-1)
+        hyper_feat = hyper_assignment.transpose(1, 2) @ feat
+        hyper_feat_mapped = self.activation(self.edge_map @ hyper_feat)
+        hyper_out = hyper_feat_mapped + hyper_feat
+        y = self.activation(hyper_assignment @ hyper_out)
+        y = y.reshape(x.size(0), x.size(1), x.size(2), x.size(3))
+        y_final = self.norm(y + x)
+        return y_final
+
+# --- Hypergraph Convolution Layer ---
 class HypergraphConvolution(nn.Module):
     def __init__(self, in_dim, out_dim, H, W=None):
         super().__init__()
@@ -38,31 +91,40 @@ class HypergraphConvolution(nn.Module):
         self.W = W if W is not None else torch.ones(H.shape[1], device=H.device)
         self.theta = nn.Parameter(torch.randn(in_dim, out_dim) / math.sqrt(in_dim))
     def forward(self, X):
+        # X: B x N x F
         H = self.H.to(X.device)
         W = self.W.to(X.device)
         N = H.shape[0]
         E = H.shape[1]
-        Dv_inv_sqrt = torch.diag(torch.pow(torch.sum(H, dim=1), -0.5)).to(X.device)
-        De_inv = torch.diag(torch.pow(torch.sum(H, dim=0), -1)).to(X.device)
-        W_diag = torch.diag(W).to(X.device)
-        X = torch.matmul(X, self.theta.to(X.device))
-        X = torch.einsum('ij,bjd->bid', Dv_inv_sqrt, X)
-        X = torch.einsum('en,bnd->bed', H.t(), X)
-        X = torch.einsum('ee,bed->bed', W_diag, X)
-        X = torch.einsum('ee,bed->bed', De_inv, X)
-        X = torch.einsum('ne,bed->bnd', H, X)
-        X = torch.einsum('ij,bjd->bid', Dv_inv_sqrt, X)
+        Dv_inv_sqrt = torch.diag(torch.pow(torch.sum(H, dim=1), -0.5)).to(X.device)  # [N, N]
+        De_inv = torch.diag(torch.pow(torch.sum(H, dim=0), -1)).to(X.device)         # [E, E]
+        W_diag = torch.diag(W).to(X.device)                                          # [E, E]
+        X = torch.matmul(X, self.theta.to(X.device))                                 # [B, N, out_dim]
+
+        # Step 1: Dv^{-1/2} X
+        X = torch.einsum('ij,bjd->bid', Dv_inv_sqrt, X)                              # [B, N, out_dim]
+        # Step 2: H^T X
+        X = torch.einsum('en,bnd->bed', H.t(), X)                                   # [B, E, out_dim]
+        # Step 3: W X
+        X = torch.einsum('ee,bed->bed', W_diag, X)                                  # [B, E, out_dim]
+        # Step 4: De^{-1} X
+        X = torch.einsum('ee,bed->bed', De_inv, X)                                  # [B, E, out_dim]
+        # Step 5: H X
+        X = torch.einsum('ne,bed->bnd', H, X)                                       # [B, N, out_dim]
+        # Step 6: Dv^{-1/2} X
+        X = torch.einsum('ij,bjd->bid', Dv_inv_sqrt, X)                             # [B, N, out_dim]
         return X
 
+# --- Self-adaptive Fusion ---
 class SelfAdaptiveFusion(nn.Module):
     def __init__(self, in_dim, num_features):
         super().__init__()
         self.fc1 = nn.Linear(in_dim * num_features, in_dim)
         self.fc2 = nn.Linear(in_dim, num_features)
     def forward(self, features):  # features: list of tensors [B x N x D]
-        concat = torch.cat(features, dim=-1)
-        weights = F.softmax(self.fc2(F.relu(self.fc1(concat))), dim=-1)
-        fused = sum(f * weights[..., i:i+1] for i, f in enumerate(features))
+        concat = torch.cat(features, dim=-1)  # B x N x D*num_features
+        weights = F.softmax(self.fc2(F.relu(self.fc1(concat))), dim=-1)  # B x N x num_features
+        fused = sum(f * weights[..., i:i+1] for i, f in enumerate(features))  # weighted sum
         return fused
 
 class ScaleAttentionFusion(nn.Module):
@@ -71,13 +133,16 @@ class ScaleAttentionFusion(nn.Module):
         self.attn = nn.MultiheadAttention(hidden_dim, num_heads=2, batch_first=True)
         self.norm = nn.LayerNorm(hidden_dim)
         self.num_scales = num_scales
+
     def forward(self, scale_features):  # list of [B x N x D], len=num_scales
+        # Stack: [B, num_scales, N, D] -> [B*N, num_scales, D]
         B, N, D = scale_features[0].shape
         x = torch.stack(scale_features, dim=1)  # [B, num_scales, N, D]
         x = x.permute(0, 2, 1, 3).reshape(B*N, self.num_scales, D)  # [B*N, num_scales, D]
-        attn_out, _ = self.attn(x, x, x)
+        attn_out, _ = self.attn(x, x, x)  # [B*N, num_scales, D]
         attn_out = self.norm(attn_out)
-        fused = attn_out.mean(dim=1).reshape(B, N, D)
+        # Lấy đặc trưng tổng hợp cho mỗi node: mean hoặc lấy scale cuối
+        fused = attn_out.mean(dim=1).reshape(B, N, D)  # [B, N, D]
         return fused
 
 class TemporalPooling(nn.Module):
@@ -85,6 +150,7 @@ class TemporalPooling(nn.Module):
         super().__init__()
         self.mode = mode
         self.ratio = ratio
+
     def forward(self, x):
         B, T, N, D = x.shape
         new_len = T // self.ratio
@@ -95,6 +161,7 @@ class TemporalPooling(nn.Module):
             y = x.mean(dim=2)
         return y
 
+# --- Main Model ---
 class FullModel(nn.Module):
     def __init__(self, args, num_dtw_clusters=32):
         super().__init__()
@@ -153,7 +220,7 @@ class FullModel(nn.Module):
             gahcn = HypergraphConvolution(self.args.hidden_dim, self.args.hidden_dim, self.H_adj)
             gah_out = self.leaky_relu(gahcn(feature_last))
 
-            # Dynamic hypergraph riêng cho mỗi scale
+            # Dynamic hypergraph riêng cho mỗi scale dựa trên embedding của scale đó
             dynamic_H = DynamicHypergraphStructure(self.num_nodes, self.H_adj.shape[1]).to(feat.device)
             H_dyn = dynamic_H()  # [N, E]
             fshcn = HypergraphConvolution(self.args.hidden_dim, self.args.hidden_dim, H_dyn)
