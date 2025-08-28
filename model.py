@@ -166,19 +166,32 @@ class FullModel(nn.Module):
     def __init__(self, args, num_dtw_clusters=32):
         super().__init__()
         self.args = args
+
         self.adj_mx = args.adj_mx  # N x N
         self.num_nodes = args.adj_mx.shape[0]
         self.time_embedding = nn.Embedding(48, args.hidden_dim)
         self.date_embedding = nn.Linear(7, args.hidden_dim)
         self.node_embedding = nn.Embedding(args.num_nodes, args.hidden_dim)
         self.input_embedding = nn.Sequential(nn.Linear(args.in_dim, args.hidden_dim), nn.ReLU())
+
         self.temporal_attention = TemporalSelfAttention(args.hidden_dim)
         self.H_adj = self.build_gah_incidence(args.adj_mx, k=args.k_nearest)
         self.edge_weight_optimizer = HyperedgeWeightOptimizer(self.H_adj.shape[1])
         self.vertex_weight_optimizer = VertexWeightOptimizer(args.num_nodes)
         self.dynamic_H = DynamicHypergraphStructure(args.num_nodes, self.H_adj.shape[1])
-        self.gahcn = HypergraphConvolution(args.hidden_dim, args.hidden_dim, self.H_adj)
-        self.fshcn = HypergraphLearning(args, args.num_hyper_edge)
+        # self.gahcn = HypergraphConvolution(args.hidden_dim, args.hidden_dim, self.H_adj)
+        # self.fshcn = HypergraphLearning(args, args.num_hyper_edge)
+
+        self.gahcn = nn.Sequential(*[
+            HypergraphConvolution(args.hidden_dim, args.hidden_dim, self.H_adj)
+            for _ in range(3)
+        ])
+
+        self.fshcn = nn.Sequential(*[
+            HypergraphLearning(args, self.num_hyper_edge)
+            for _ in range(3)
+        ])
+
         self.leaky_relu = nn.LeakyReLU()
         self.fusion = SelfAdaptiveFusion(args.hidden_dim, 2)
 
@@ -223,7 +236,12 @@ class FullModel(nn.Module):
         node_emb = self.node_embedding(node_idx).unsqueeze(0).unsqueeze(0)
         feature = input_emb + time_emb + date_emb + node_emb  # B x T x N x D
 
-        feature = self.temporal_attention(feature)
+        # feature = self.temporal_attention(feature)
+
+        B, T, N, D = feature.shape
+        feature = feature.reshape(B*N, T, D)
+        feature = self.temporal_transformer(feature)
+        feature = feature.reshape(B, N, T, D).permute(0, 2, 1, 3)
 
         multi_scale_features = []
         for pooling in self.poolings:
