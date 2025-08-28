@@ -126,9 +126,7 @@ class FullModel(nn.Module):
         # Dynamic: mỗi time step
         outputs = []
         gah_H = build_gah(self.args.predefined_adj, self.k_nearest)  # N x N
-        print(feature.size(1))
         for t in range(feature.size(1)):
-            print(t)
             x_t = feature[:, t, :, :]  # B x N x D
             fsh_H = build_fsh(x_t, self.num_fsh_edges)  # B x N x E
             gah_out = self.gah_conv(x_t, gah_H)
