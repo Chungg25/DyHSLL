@@ -25,11 +25,34 @@ class VertexWeightOptimizer(nn.Module):
 
 # --- Dynamic Hypergraph Structure Optimization ---
 class DynamicHypergraphStructure(nn.Module):
-    def __init__(self, num_nodes, num_edges):
+    def __init__(self, num_nodes, num_edges, emb_dim):
         super().__init__()
-        self.H = nn.Parameter(torch.rand(num_nodes, num_edges), requires_grad=True)
-    def forward(self):
-        H_proj = torch.clamp(self.H, 0, 1)
+        self.num_nodes = num_nodes
+        self.num_edges = num_edges
+        self.emb_dim = emb_dim
+        # Các tham số học để sinh đặc trưng node cho hypergraph
+        self.fc1 = nn.Linear(emb_dim, emb_dim)
+        self.fc2 = nn.Linear(emb_dim, emb_dim)
+        self.edge_proj = nn.Linear(emb_dim, num_edges)
+        self.node_proj = nn.Linear(emb_dim, num_nodes)
+
+    def forward(self, node_emb):
+        # node_emb: [N, D] hoặc [B, N, D]
+        if node_emb.dim() == 2:
+            node_feat = torch.relu(self.fc1(node_emb))  # [N, D]
+            edge_feat = torch.relu(self.fc2(node_emb))  # [N, D]
+        else:
+            node_feat = torch.relu(self.fc1(node_emb))  # [B, N, D]
+            edge_feat = torch.relu(self.fc2(node_emb))  # [B, N, D]
+
+        # Sinh ma trận hypergraph incidence động
+        H_node = torch.sigmoid(self.node_proj(node_feat))  # [N, N] hoặc [B, N, N]
+        H_edge = torch.sigmoid(self.edge_proj(edge_feat))  # [N, E] hoặc [B, N, E]
+
+        # Kết hợp hai đặc trưng để tạo H động
+        H_proj = (H_node + H_edge) / 2  # [N, E] hoặc [B, N, E]
+        # Chuẩn hóa để đảm bảo giá trị hợp lệ
+        H_proj = torch.clamp(H_proj, 0, 1)
         return H_proj
 
 # --- Temporal Self-attention (Transformer) ---
