@@ -183,6 +183,7 @@ class FullModel(nn.Module):
     def __init__(self, args, num_dtw_clusters=32):
         super().__init__()
         self.args = args
+        self.in_dim = args.in_dim
         self.adj_mx = args.adj_mx  # N x N
         self.num_nodes = args.adj_mx.shape[0]
         self.hidden_dim = args.hidden_dim
@@ -247,21 +248,36 @@ class FullModel(nn.Module):
         feature = self.temporal_attention(feature)
 
         # Lấy frame cuối cùng (hoặc bạn có thể dùng toàn bộ chuỗi)
-        feature_last = feature[:, -1, :, :]  # B x N x D
+        feature_last = feature[:, -1, :, :self.in_dim]  # B x N x D
+        node_emb_dyn = feature_last
 
         # Dynamic hypergraph xây dựng lại mỗi forward
-        H_proj = self.dynamic_H()  # [N, E]
+        H_proj = self.dynamic_H(node_emb_dyn)  # [N, E]
         edge_weights = self.edge_weight_optimizer()  # [E]
         vertex_weights = self.vertex_weight_optimizer()  # [N]
 
-        gah_out = self.leaky_relu(
-            HypergraphConvolution(
-                self.hidden_dim,
-                self.hidden_dim,
-                H_proj,
-                edge_weights
-            )(feature_last * vertex_weights.unsqueeze(-1))
-        )
+        if H_proj.dim() == 3:
+            gah_out_list = []
+            for b in range(H_proj.shape[0]):
+                gah_out_b = self.leaky_relu(
+                    HypergraphConvolution(
+                        self.hidden_dim,
+                        self.hidden_dim,
+                        H_proj[b],
+                        edge_weights
+                    )(feature_last[b] * vertex_weights.unsqueeze(-1))
+                )
+                gah_out_list.append(gah_out_b)
+            gah_out = torch.stack(gah_out_list, dim=0)  # [B, N, D]
+        else:
+            gah_out = self.leaky_relu(
+                HypergraphConvolution(
+                    self.hidden_dim,
+                    self.hidden_dim,
+                    H_proj,
+                    edge_weights
+                )(feature_last * vertex_weights.unsqueeze(-1))
+            )
 
         fsh_out = self.fshcn(feature)
         fsh_out_last = fsh_out[:, -1, :, :]
