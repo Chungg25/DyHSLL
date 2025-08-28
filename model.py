@@ -188,7 +188,7 @@ class FullModel(nn.Module):
         ])
 
         self.fshcn = nn.Sequential(*[
-            HypergraphLearning(args, self.num_hyper_edge)
+            HypergraphLearning(args, args.num_hyper_edge)
             for _ in range(3)
         ])
 
