@@ -198,9 +198,9 @@ class FullModel(nn.Module):
 
 
         for _ in range(self.num_scales):
-            self.dynamic_H_list.append(DynamicHypergraphStructure(args.num_hyper_edge, args.num_hyper_edge))
+            self.dynamic_H_list.append(DynamicHypergraphStructure(self.num_nodes, args.num_hyper_edge))
             self.edge_weight_optimizer_list.append(HyperedgeWeightOptimizer(args.num_hyper_edge))
-            self.vertex_weight_optimizer_list.append(VertexWeightOptimizer(args.num_hyper_edge))
+            self.vertex_weight_optimizer_list.append(VertexWeightOptimizer(self.num_nodes))  # <-- Sửa ở đây
 
             self.gahcn_list.append(HypergraphConvolution(self.hidden_dim, self.hidden_dim, torch.eye(self.num_nodes)))
             self.fshcn_list.append(HypergraphLearning(args, args.num_hyper_edge))
@@ -247,15 +247,14 @@ class FullModel(nn.Module):
 
             H_proj = self.dynamic_H_list[i]()  # [N, E]
             edge_weights = self.edge_weight_optimizer_list[i]()  # [E]
-            vertex_weights = self.vertex_weight_optimizer_list[i]()  # [N]
-
+            vertex_weights = self.vertex_weight_optimizer_list[i]()  # [num_nodes]
             gah_out = self.leaky_relu(
                 HypergraphConvolution(
                     self.hidden_dim,
                     self.hidden_dim,
                     H_proj,
                     edge_weights
-                )(feature_last * vertex_weights.unsqueeze(-1))
+                )(feature_last * vertex_weights.unsqueeze(-1))  # feature_last: [B, N, D], vertex_weights: [N]
             )
 
             fsh_out = self.fshcn_list[i](pooled)
