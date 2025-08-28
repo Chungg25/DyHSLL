@@ -198,14 +198,11 @@ class FullModel(nn.Module):
 
 
         for _ in range(self.num_scales):
-            H_adj = self.build_gah_incidence(args.adj_mx, k=args.k_nearest)
-            self.H_adj_list.append(H_adj)
-            self.edge_weight_optimizer_list.append(HyperedgeWeightOptimizer(H_adj.shape[1]))
-            self.vertex_weight_optimizer_list.append(VertexWeightOptimizer(args.num_nodes))
-            self.dynamic_H_list.append(DynamicHypergraphStructure(args.num_nodes, H_adj.shape[1]))
-            self.gahcn_list.append(HypergraphConvolution(args.hidden_dim, args.hidden_dim, H_adj))
-            
-            self.dynamic_H_list.append(DynamicHypergraphStructure(self.num_nodes, H_adj.shape[1]))
+            self.dynamic_H_list.append(DynamicHypergraphStructure(args.num_hyper_edge, args.num_hyper_edge))
+            self.edge_weight_optimizer_list.append(HyperedgeWeightOptimizer(args.num_hyper_edge))
+            self.vertex_weight_optimizer_list.append(VertexWeightOptimizer(args.num_hyper_edge))
+
+            self.gahcn_list.append(HypergraphConvolution(self.hidden_dim, self.hidden_dim, torch.eye(self.num_nodes)))
             self.fshcn_list.append(HypergraphLearning(args, args.num_hyper_edge))
 
         self.leaky_relu = nn.LeakyReLU()
@@ -248,30 +245,22 @@ class FullModel(nn.Module):
             pooled = pooling(feature)  # B x T' x N x D
             feature_last = pooled[:, -1, :, :]  # B x N x D
 
-            H_gah = self.H_adj_list[i]
-            edge_weights_gah = self.edge_weight_optimizer_list[i]()
-            vertex_weights_gah = self.vertex_weight_optimizer_list[i]()
+            H_proj = self.dynamic_H_list[i]()  # [N, E]
+            edge_weights = self.edge_weight_optimizer_list[i]()  # [E]
+            vertex_weights = self.vertex_weight_optimizer_list[i]()  # [N]
+
             gah_out = self.leaky_relu(
                 HypergraphConvolution(
                     self.hidden_dim,
                     self.hidden_dim,
-                    H_gah,
-                    edge_weights_gah
-                )(feature_last * vertex_weights_gah.unsqueeze(-1))
+                    H_proj,
+                    edge_weights
+                )(feature_last * vertex_weights.unsqueeze(-1))
             )
 
-            H_fsh = self.dynamic_H_list[i]()
-            edge_weights_fsh = self.edge_weight_optimizer_list[i]()
-            vertex_weights_fsh = self.vertex_weight_optimizer_list[i]()
-            fsh_out = self.leaky_relu(
-                HypergraphConvolution(
-                    self.hidden_dim,
-                    self.hidden_dim,
-                    H_fsh,
-                    edge_weights_fsh
-                )(feature_last * vertex_weights_fsh.unsqueeze(-1))
-            )
-            fused = self.fusion([gah_out, fsh_out])  # B x N x D
+            fsh_out = self.fshcn_list[i](pooled)
+            fsh_out_last = fsh_out[:, -1, :, :]
+            fused = self.fusion([gah_out, fsh_out_last])
             multi_scale_features.append(fused)
         # Fusion all scales
         # fused_feature = self.global_fusion_layer(torch.cat(multi_scale_features, dim=-1))  # B x N x D
