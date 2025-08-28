@@ -183,7 +183,7 @@ class FullModel(nn.Module):
         self.fusion = SelfAdaptiveFusion(args.hidden_dim, 2)
 
         self.poolings = nn.ModuleList([
-            TemporalPooling('mean', ratio) for ratio in [12, 6, 4, 2, 1]
+            TemporalPooling('mean', ratio) for ratio in [12, 8, 6, 4, 3, 2, 1]
         ])
 
         self.scale_fusion = ScaleAttentionFusion(args.hidden_dim, len(self.poolings))
