@@ -109,7 +109,7 @@ class FullModel(nn.Module):
         self.H_adj = self.build_gah_incidence(args.adj_mx, k=args.k_nearest)
         self.leaky_relu = nn.LeakyReLU()
         self.poolings = nn.ModuleList([
-            TemporalPooling('mean', ratio) for ratio in [12, 6, 4, 3, 2, 1]
+            TemporalPooling('mean', ratio) for ratio in [12, 8, 6, 4, 3, 2, 1]
         ])
         self.scale_fusion = ScaleAttentionFusion(args.hidden_dim, len(self.poolings))
         self.pred_head = nn.Sequential(
@@ -153,17 +153,17 @@ class FullModel(nn.Module):
             gahcn = HypergraphConvolution(self.args.hidden_dim, self.args.hidden_dim, self.H_adj)
             gah_out = self.leaky_relu(gahcn(feature_last))
 
-            # Dynamic hypergraph from embedding at each scale
+            # Dynamic hypergraph riêng cho mỗi scale
             dynamic_H = DynamicHypergraphStructure(self.num_nodes, self.H_adj.shape[1]).to(feat.device)
             H_dyn = dynamic_H()  # [N, E]
             fshcn = HypergraphConvolution(self.args.hidden_dim, self.args.hidden_dim, H_dyn)
             fsh_out = self.leaky_relu(fshcn(feature_last))
 
-            # Fusion GAH and FSH at each scale
+            # Fusion GAH và FSH tại mỗi scale
             fused = self.hyper_fusion([gah_out, fsh_out])  # B x N x D
             multi_scale_features.append(fused)
 
-        # Weighted fusion across scales (learned weights)
+        # Fusion across scales (learned weights)
         fused_feature = self.scale_fusion(multi_scale_features)  # B x N x D
 
         future_feature = data['target'][:, :, :, -5:].transpose(1, 2).reshape(self.args.batch_size, self.num_nodes, -1)
