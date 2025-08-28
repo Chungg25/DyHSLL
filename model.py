@@ -90,25 +90,54 @@ class SelfAdaptiveFusion(nn.Module):
         fused = sum(f * weights[..., i:i+1] for i, f in enumerate(features))
         return fused
 
+class MultiScaleHypergraphBlock(nn.Module):
+    def __init__(self, args, k_nearest, num_fsh_edges, pool_ratio):
+        super().__init__()
+        self.pool = TemporalPooling(mode='mean', ratio=pool_ratio)
+        self.gah_conv = HypergraphConvolution(args.hidden_dim, args.hidden_dim)
+        self.fsh_conv = HypergraphConvolution(args.hidden_dim, args.hidden_dim)
+        self.fusion = SelfAdaptiveFusion(args.hidden_dim, 2)
+        self.k_nearest = k_nearest
+        self.num_fsh_edges = num_fsh_edges
+        self.adj = args.predefined_adj
+
+    def forward(self, feature):
+        # feature: B x T x N x D
+        pooled = self.pool(feature)  # B x T' x N x D
+        outputs = []
+        gah_H = build_gah(self.adj, self.k_nearest)  # N x N
+        for t in range(pooled.size(1)):
+            x_t = pooled[:, t, :, :]  # B x N x D
+            fsh_H = build_fsh(x_t, self.num_fsh_edges)  # B x N x E
+            gah_out = self.gah_conv(x_t, gah_H)
+            fsh_out = self.fsh_conv(x_t, fsh_H)
+            fused = self.fusion([gah_out, fsh_out])  # B x N x D
+            outputs.append(fused.unsqueeze(1))
+        fused_feature = torch.cat(outputs, dim=1)  # B x T' x N x D
+        return fused_feature
+
 class FullModel(nn.Module):
-    def __init__(self, args, k_nearest=8, num_fsh_edges=8):
+    def __init__(self, args):
         super().__init__()
         self.args = args
         self.time_embedding = TemporalEmbedding(args.hidden_dim)
         self.node_embedding = nn.Embedding(args.num_nodes, args.hidden_dim)
         self.input_embedding = nn.Sequential(nn.Linear(args.in_dim, args.hidden_dim), nn.ReLU())
         self.temporal_attention = TemporalSelfAttention(args.hidden_dim)
-        self.gah_conv = HypergraphConvolution(args.hidden_dim, args.hidden_dim)
-        self.fsh_conv = HypergraphConvolution(args.hidden_dim, args.hidden_dim)
-        self.fusion = SelfAdaptiveFusion(args.hidden_dim, 2)
+
+        # Multiscale hypergraph blocks
+        self.ms_blocks = nn.ModuleList([
+            MultiScaleHypergraphBlock(args, k_nearest=8, num_fsh_edges=8, pool_ratio=1),
+            MultiScaleHypergraphBlock(args, k_nearest=6, num_fsh_edges=6, pool_ratio=2),
+            MultiScaleHypergraphBlock(args, k_nearest=4, num_fsh_edges=4, pool_ratio=3)
+        ])
+        self.final_fusion = SelfAdaptiveFusion(args.hidden_dim, len(self.ms_blocks))
         self.pred_head = nn.Sequential(
             nn.Linear(args.hidden_dim + 5 * 12, args.hidden_dim),
             nn.Dropout(args.dropout),
             nn.ReLU(),
             nn.Linear(args.hidden_dim, args.out_dim * args.seq_out_len)
         )
-        self.k_nearest = k_nearest
-        self.num_fsh_edges = num_fsh_edges
 
     def forward(self, data):
         feat = data['feat']  # B x T x N x Din
@@ -123,20 +152,13 @@ class FullModel(nn.Module):
         feature = input_emb + tod_emb.unsqueeze(2) + dow_emb.unsqueeze(2) + node_emb  # B x T x N x D
         feature = self.temporal_attention(feature)  # B x T x N x D
 
-        # Dynamic: mỗi time step
-        outputs = []
-        gah_H = build_gah(self.args.predefined_adj, self.k_nearest)  # N x N
-        for t in range(feature.size(1)):
-            x_t = feature[:, t, :, :]  # B x N x D
-            fsh_H = build_fsh(x_t, self.num_fsh_edges)  # B x N x E
-            gah_out = self.gah_conv(x_t, gah_H)
-            fsh_out = self.fsh_conv(x_t, fsh_H)
-            fused = self.fusion([gah_out, fsh_out])  # B x N x D
-            outputs.append(fused.unsqueeze(1))
-        fused_feature = torch.cat(outputs, dim=1)  # B x T x N x D
+        # Multiscale hypergraph fusion
+        ms_features = []
+        for block in self.ms_blocks:
+            ms_feat = block(feature)  # B x T' x N x D
+            ms_features.append(ms_feat[:, -1, :, :])  # lấy đặc trưng cuối cùng mỗi scale: B x N x D
 
-        # Lấy đặc trưng cuối cùng cho từng node
-        final_feature = fused_feature[:, -1, :, :]  # B x N x D
+        fused_feature = self.final_fusion(ms_features)  # B x N x D
 
         future_feature = data['target'][:, :, :, -5:].transpose(1, 2).reshape(self.args.batch_size, self.args.num_nodes, -1)
         if self.args.feat_off == 1:
@@ -144,7 +166,7 @@ class FullModel(nn.Module):
         else:
             future_feature = self.args.scaler[0].transform(future_feature)
 
-        pred = self.pred_head(torch.cat([final_feature, future_feature], dim=-1))
+        pred = self.pred_head(torch.cat([fused_feature, future_feature], dim=-1))
         pred = pred.view(pred.size(0), self.args.num_nodes, self.args.out_dim, self.args.seq_out_len)
         pred = pred.permute(0, 3, 1, 2)  # B x seq_out_len x N x out_dim
         return pred
