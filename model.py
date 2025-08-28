@@ -152,7 +152,7 @@ class FullModel(nn.Module):
     def forward(self, data):
         feat = data['feat']  # B x T x N x Din
         tod_idx = data['tod_idx']  # B x T
-        dow_idx = data['dow_idx']  # B x T
+        dow_idx = data['dow_onehot']  # B x T
         node_idx = torch.arange(0, self.num_nodes).to(feat.device)  # N
 
         input_emb = self.input_embedding(feat)  # B x T x N x D
