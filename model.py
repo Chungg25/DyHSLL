@@ -168,7 +168,7 @@ class FullModel(nn.Module):
         self.args = args
         self.adj_mx = args.adj_mx  # N x N
         self.num_nodes = args.adj_mx.shape[0]
-        self.time_embedding = nn.Embedding(288, args.hidden_dim)
+        self.time_embedding = nn.Embedding(48, args.hidden_dim)
         self.date_embedding = nn.Linear(7, args.hidden_dim)
         self.node_embedding = nn.Embedding(args.num_nodes, args.hidden_dim)
         self.input_embedding = nn.Sequential(nn.Linear(args.in_dim, args.hidden_dim), nn.ReLU())
