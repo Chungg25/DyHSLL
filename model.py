@@ -174,18 +174,19 @@ class FullModel(nn.Module):
         self.input_embedding = nn.Sequential(nn.Linear(args.in_dim, args.hidden_dim), nn.ReLU())
         self.temporal_attention = TemporalSelfAttention(args.hidden_dim)
         self.H_adj = self.build_gah_incidence(args.adj_mx, k=args.k_nearest)
+        self.gahcn = HypergraphConvolution(args.hidden_dim, args.hidden_dim, self.H_adj)
         self.leaky_relu = nn.LeakyReLU()
         self.poolings = nn.ModuleList([
             TemporalPooling('mean', ratio) for ratio in [12, 8, 6, 4, 3, 2, 1]
         ])
         self.scale_fusion = ScaleAttentionFusion(args.hidden_dim, len(self.poolings))
+        self.hyper_fusion = SelfAdaptiveFusion(args.hidden_dim, 2)
         self.pred_head = nn.Sequential(
             nn.Linear(args.hidden_dim + 5 * 12, args.hidden_dim),
             nn.Dropout(args.dropout),
             nn.ReLU(),
             nn.Linear(args.hidden_dim, args.out_dim * args.seq_out_len)
         )
-        self.hyper_fusion = SelfAdaptiveFusion(args.hidden_dim, 2)
 
     def build_gah_incidence(self, adj_mx, k=32):
         N = adj_mx.shape[0]
@@ -217,8 +218,7 @@ class FullModel(nn.Module):
             feature_last = pooled[:, -1, :, :]  # B x N x D
 
             # GAHCN (static hypergraph)
-            gahcn = HypergraphConvolution(self.args.hidden_dim, self.args.hidden_dim, self.H_adj)
-            gah_out = self.leaky_relu(gahcn(feature_last))
+            gah_out = self.leaky_relu(self.gahcn(feature_last))
 
             # Dynamic hypergraph riêng cho mỗi scale dựa trên embedding của scale đó
             dynamic_H = DynamicHypergraphStructure(self.num_nodes, self.H_adj.shape[1]).to(feat.device)
