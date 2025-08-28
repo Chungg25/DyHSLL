@@ -6,6 +6,11 @@ import torch
 from torch.autograd import Variable
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
+def norm_adj(adj):
+    print(adj.shape)
+    norm = (adj.sum(dim=-1, keepdims=True) ** (-0.5)) * (adj.sum(dim=-2, keepdims=True) ** (-0.5)) + 1e-5
+    normalized_adj = adj / norm
+    return normalized_adj
 
 def normal_std(x):
     return x.std() * np.sqrt((len(x) - 1.) / (len(x)))
@@ -366,9 +371,9 @@ def masked_mape_np(y_true, y_pred, null_val=np.nan):
 
 
 def metric(pred, real):
-    mae = mean_absolute_error(pred.cpu().flatten(), real.cpu().flatten()).item()
-    mape = masked_mape_np(pred.cpu().numpy(), real.cpu().numpy(), 0).item()
-    rmse = mean_squared_error(pred.cpu().flatten(), real.cpu().flatten()).item() ** 0.5
+    mae = mean_absolute_error(pred.cpu().flatten(), real.cpu().flatten())
+    mape = masked_mape_np(pred.cpu().numpy(), real.cpu().numpy(), 0)
+    rmse = mean_squared_error(pred.cpu().flatten(), real.cpu().flatten()) ** 0.5
     return mae, rmse, mape
 
 

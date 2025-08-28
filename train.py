@@ -1,6 +1,7 @@
 import os
 import random
 import torch.cuda
+import torch
 
 os.environ['MKL_THREADING_LAYER'] = 'GNU'
 import argparse
@@ -19,7 +20,8 @@ parser.add_argument('--dataset', type=str, default='METR-LA')
 parser.add_argument('--seq_in_len', type=int, default=12, help='input sequence length')
 parser.add_argument('--seq_out_len', type=int, default=12, help='output sequence length')
 parser.add_argument('--in_dim', type=int, default=2, help='inputs dimension')
-parser.add_argument('--num_nodes', type=int, default=207)
+parser.add_argument('--out_dim', type=int, default=2, help='inputs dimension')
+parser.add_argument('--num_nodes', type=int, default=266)
 parser.add_argument('--adj_data', type=str, default=False)
 
 
@@ -42,7 +44,7 @@ parser.add_argument('--seed', type=int, default=0)
 parser.add_argument('--runs', type=int, default=1, help='number of runs')
 parser.add_argument('--tolerance', type=int, default=30, help='tolerance for earlystopping')
 parser.add_argument('--device', type=str, default='cuda:0', help='')
-parser.add_argument('--batch_size', type=int, default=32, help='batch size')
+parser.add_argument('--batch_size', type=int, default=8, help='batch size')
 parser.add_argument('--learning_rate', type=float, default=0.001, help='learning rate')
 parser.add_argument('--weight_decay', type=float, default=0.0001, help='weight decay rate')
 parser.add_argument('--clip', type=int, default=5, help='clip')
@@ -94,6 +96,13 @@ args.predefined_adj = torch.tensor(predefined_A).to(device)
 args.predefined_adjs = [torch.tensor(adj).to(device) for adj in predefined_adjs]
 args.scaler = scaler
 args.device = device
+import pickle
+
+with open('NYC/adj_mx_taxi_2.pkl', 'rb') as f:
+  adj_mx = pickle.load(f)
+adj_mx = torch.tensor(adj_mx, dtype=torch.float32)
+args.adj_mx = adj_mx
+args.k_nearest = 32
 
 random.seed(args.seed)
 np.random.seed(args.seed)
@@ -104,12 +113,13 @@ torch.cuda.manual_seed(args.seed)
 def test(engine):
     outputs = []
     realy = torch.Tensor(dataloader['y_test']).to(device)
-    realy = realy.transpose(1, 3)[:, 0, :, :]
+    realy = realy.transpose(1, 3)[:, :args.out_dim, :, :]
+    # print("realy: ", realy.shape)
     for iter, (x, y) in enumerate(dataloader['test_loader'].get_iterator()):
         testx = torch.Tensor(x).to(device)
         testy = torch.Tensor(y).to(device)
         input = testx  # B x T x N x 2
-        tod_idx = (input[:, :, 0, args.feat_off] * 288).long()  # B x T
+        tod_idx = (input[:, :, 0, args.feat_off] * 48).long()  # B x T
         data = {
             'feat': input[:, :, :, :args.feat_off + 1],
             'tod_idx': tod_idx,
@@ -118,7 +128,9 @@ def test(engine):
         }
         with torch.no_grad():
             preds = engine.model(data)
+            # print("pred: ", preds.shape)
             preds = preds.transpose(1, 3)
+            # print("pred1: ", preds.shape)
         outputs.append(preds.squeeze(dim=1))
     yhat = torch.cat(outputs, dim=0)
     yhat = yhat[:realy.size(0), ...]
@@ -160,7 +172,7 @@ def main(runid):
             trainx = torch.Tensor(x).to(device)
             trainy = torch.Tensor(y).to(device)
             metrics = engine.train(trainx,
-                                   trainy[:, :, :, 0],
+                                   trainy[:, :, :, :args.out_dim],
                                    trainy)
             for k, v in metrics.items():
                 metrics_list[k].append(v)
@@ -173,7 +185,7 @@ def main(runid):
                 dataloader['val_loader'].get_iterator()):
             testx = torch.Tensor(x).to(device)
             testy = torch.Tensor(y).to(device)
-            metrics = engine.eval(testx, testy[:, :, :, 0], testy)
+            metrics = engine.eval(testx, testy[:, :, :, :args.out_dim], testy)
             for k, v in metrics.items():
                 val_metrics_list[k].append(v)
         s2 = time.time()

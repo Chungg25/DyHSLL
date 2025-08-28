@@ -24,7 +24,7 @@ class Trainer():
         self.model.train()
         self.optimizer.zero_grad()
 
-        tod_idx = (input[:, :, 0, self.args.feat_off] * 288).long()  # B x T
+        tod_idx = (input[:, :, 0, self.args.feat_off] * 48).long()  # B x T
         args = self.args
         data = {
             'feat': input[:, :, :, :args.feat_off + 1],
@@ -33,11 +33,14 @@ class Trainer():
             'target': target
         }
         output = self.model(data)
+        # print("in: ", input.shape)
+        # print("real_val: ", real_val.shape)
+        real = real_val[..., :self.args.out_dim]
 
         # print(output.shape, real_val.shape)
 
-        output = output.transpose(1, 3)
-        real = torch.unsqueeze(real_val.transpose(1, 2), dim=1)
+        # output = output.transpose(1, 3)
+        # real = torch.unsqueeze(real_val.transpose(1, 2), dim=1)
         # print(output.shape, real.shape)
         if self.args.feat_off == 1:
             predict = self.scaler.inverse_transform(output)
@@ -63,7 +66,7 @@ class Trainer():
 
     def eval(self, input, real_val, target):
         self.model.eval()
-        tod_idx = (input[:, :, 0, self.args.feat_off] * 288).long()  # B x T
+        tod_idx = (input[:, :, 0, self.args.feat_off] * 48).long()  # B x T
         args = self.args
         data = {
             'feat': input[:, :, :, :args.feat_off + 1],
@@ -73,8 +76,9 @@ class Trainer():
         }
         with torch.no_grad():
             output = self.model(data)
-        output = output.transpose(1, 3)
-        real = torch.unsqueeze(real_val.transpose(1, 2), dim=1)
+        # output = output.transpose(1, 3)
+        real = real_val[..., :self.args.out_dim]
+        # real = torch.unsqueeze(real_val.transpose(1, 2), dim=1)
         if self.args.feat_off == 1:
             predict = self.scaler.inverse_transform(output)
         else:
