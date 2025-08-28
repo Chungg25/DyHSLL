@@ -176,12 +176,12 @@ class FullModel(nn.Module):
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=args.hidden_dim,
-            nhead=self.transformer_heads,
+            nhead=4,
             batch_first=True
         )
 
         # self.temporal_attention = TemporalSelfAttention(args.hidden_dim)
-        self.temporal_transformer = nn.TransformerEncoder(encoder_layer, num_layers=self.transformer_layers)
+        self.temporal_transformer = nn.TransformerEncoder(encoder_layer, num_layers=3)
         self.H_adj = self.build_gah_incidence(args.adj_mx, k=args.k_nearest)
         self.edge_weight_optimizer = HyperedgeWeightOptimizer(self.H_adj.shape[1])
         self.vertex_weight_optimizer = VertexWeightOptimizer(args.num_nodes)
