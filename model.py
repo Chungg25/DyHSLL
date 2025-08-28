@@ -202,7 +202,7 @@ class FullModel(nn.Module):
         )
         self.fusion = SelfAdaptiveFusion(args.hidden_dim, 2)
 
-    def build_gah_incidence(self, adj_mx, k=8):
+    def build_gah_incidence(self, adj_mx, k=32):
         N = adj_mx.shape[0]
         E = N
         H = torch.zeros(N, E, device=adj_mx.device)
