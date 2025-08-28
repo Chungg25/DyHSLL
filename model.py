@@ -170,3 +170,18 @@ class FullModel(nn.Module):
         pred = pred.view(pred.size(0), self.args.num_nodes, self.args.out_dim, self.args.seq_out_len)
         pred = pred.permute(0, 3, 1, 2)  # B x seq_out_len x N x out_dim
         return pred
+
+
+class TemporalPooling(nn.Module):
+    def __init__(self, mode='mean', ratio=2):
+        super(TemporalPooling, self).__init__()
+        self.mode = mode
+        self.ratio = ratio
+
+    def forward(self, x):
+        x = x.reshape(x.size(0), -1, self.ratio, x.size(2), x.size(3))
+        if self.mode == 'max':
+            y = x.max(dim=2)[0]
+        else:
+            y = x.mean(dim=2)
+        return y
