@@ -5,183 +5,274 @@ import torch.nn.functional as F
 from util import norm_adj
 from backbone import GNNLayer
 
-class TemporalEmbedding(nn.Module):
-    def __init__(self, hidden_dim):
+# --- Hyperedge Weight Optimization ---
+class HyperedgeWeightOptimizer(nn.Module):
+    def __init__(self, num_edges):
         super().__init__()
-        self.tod_emb = nn.Embedding(288, hidden_dim)
-        self.dow_emb = nn.Linear(7, hidden_dim)
-    def forward(self, tod_idx, dow_onehot):
-        tod = self.tod_emb(tod_idx)  # B x T x D
-        dow = self.dow_emb(dow_onehot)  # B x T x D
-        return tod, dow
+        self.weights = nn.Parameter(torch.ones(num_edges) / num_edges, requires_grad=True)
+    def forward(self):
+        w = F.softmax(self.weights, dim=0)
+        return w
 
+# --- Vertex Weight Optimization ---
+class VertexWeightOptimizer(nn.Module):
+    def __init__(self, num_nodes):
+        super().__init__()
+        self.weights = nn.Parameter(torch.ones(num_nodes) / num_nodes, requires_grad=True)
+    def forward(self):
+        u = F.softmax(self.weights, dim=0)
+        return u
+
+# --- Dynamic Hypergraph Structure Optimization ---
+class DynamicHypergraphStructure(nn.Module):
+    def __init__(self, num_nodes, num_edges):
+        super().__init__()
+        self.H = nn.Parameter(torch.rand(num_nodes, num_edges), requires_grad=True)
+    def forward(self):
+        H_proj = torch.clamp(self.H, 0, 1)
+        return H_proj
+
+# --- Temporal Self-attention (Transformer) ---
 class TemporalSelfAttention(nn.Module):
     def __init__(self, hidden_dim):
         super().__init__()
         self.WQ = nn.Linear(hidden_dim, hidden_dim)
         self.WK = nn.Linear(hidden_dim, hidden_dim)
         self.WV = nn.Linear(hidden_dim, hidden_dim)
-    def forward(self, X):  # B x T x N x D
+    def forward(self, X):  # X: B x T x N x D
         B, T, N, D = X.shape
-        X_ = X.permute(0,2,1,3).reshape(B*N, T, D)  # (B*N) x T x D
+        X_ = X.reshape(B*T, N, D)
         Q = self.WQ(X_)
         K = self.WK(X_)
         V = self.WV(X_)
         attn = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(D)
         attn = F.softmax(attn, dim=-1)
         Z = torch.matmul(attn, V)
-        Z = Z.reshape(B, N, T, D).permute(0,2,1,3)  # B x T x N x D
+        Z = Z.reshape(B, T, N, D)
         return Z
 
-def build_gah(adj, k):
-    N = adj.shape[0]
-    H = torch.zeros(N, N, device=adj.device)
-    for v in range(N):
-        neighbors = torch.topk(adj[v], k=k, largest=True).indices
-        H[v, v] = 1
-        H[neighbors, v] = 1
-    return H
+# --- DTW clustering (pseudo, replace with actual DTW) ---
+def dtw_clustering(time_series, num_clusters):
+    N = time_series.shape[0]
+    H_sim = torch.zeros(N, num_clusters, device=time_series.device)
+    cluster_idx = torch.randint(0, num_clusters, (N,), device=time_series.device)
+    for i in range(N):
+        H_sim[i, cluster_idx[i]] = 1
+    return H_sim
 
-def build_fsh(feature, num_edges):
-    # feature: B x N x D
-    B, N, D = feature.shape
-    H = torch.zeros(B, N, num_edges, device=feature.device)
-    for b in range(B):
-        sim = torch.matmul(feature[b], feature[b].T)  # N x N
-        for v in range(N):
-            neighbors = torch.topk(sim[v], k=num_edges, largest=True).indices
-            H[b, v, :] = 0
-            H[b, v, :] = (neighbors == torch.arange(num_edges, device=feature.device)).float()
-    return H  # B x N x num_edges
+class HypergraphLearning(nn.Module):
+    def __init__(self, args, num_edges):
+        super(HypergraphLearning, self).__init__()
+        self.args = args
+        self.num_edges = num_edges
+        self.edge_clf = torch.randn(args.hidden_dim, self.num_edges) / math.sqrt(self.num_edges)
+        self.edge_clf = nn.Parameter(self.edge_clf, requires_grad=True)
+        self.edge_map = torch.randn(self.num_edges, self.num_edges) / math.sqrt(self.num_edges)
+        self.edge_map = nn.Parameter(self.edge_map, requires_grad=True)
+        self.activation = nn.ReLU()
+        self.norm = nn.LayerNorm(args.hidden_dim)
 
+    def forward(self, x):  # B x T x N x D
+        feat = x.reshape(x.size(0), -1, x.size(3))
+        hyper_assignment = torch.softmax(feat @ self.edge_clf, dim=-1)
+        hyper_feat = hyper_assignment.transpose(1, 2) @ feat
+        hyper_feat_mapped = self.activation(self.edge_map @ hyper_feat)
+        hyper_out = hyper_feat_mapped + hyper_feat
+        y = self.activation(hyper_assignment @ hyper_out)
+        y = y.reshape(x.size(0), x.size(1), x.size(2), x.size(3))
+        y_final = self.norm(y + x)
+        return y_final
+
+# --- Hypergraph Convolution Layer ---
 class HypergraphConvolution(nn.Module):
-    def __init__(self, in_dim, out_dim):
+    def __init__(self, in_dim, out_dim, H, W=None):
         super().__init__()
+        self.H = H  # N x E
+        self.W = W if W is not None else torch.ones(H.shape[1], device=H.device)
         self.theta = nn.Parameter(torch.randn(in_dim, out_dim) / math.sqrt(in_dim))
-    def forward(self, X, H, W=None):
-        # X: B x N x D, H: B x N x E or N x E, W: E
-        if H.dim() == 2:
-            H = H.unsqueeze(0).expand(X.size(0), -1, -1)
-        B, N, E = H.shape
-        D = X.size(-1)
-        eps = 1e-6
-        Dv_inv_sqrt = torch.diag_embed(torch.pow(torch.sum(H, dim=2) + eps, -0.5))  # B x N x N
-        De_inv = torch.diag_embed(torch.pow(torch.sum(H, dim=1) + eps, -1))         # B x E x E
-        if W is None:
-            W = torch.ones(E, device=X.device)
-        W_diag = torch.diag(W).unsqueeze(0).expand(B, -1, -1)                       # B x E x E
-        X = torch.matmul(X, self.theta)
-        X = torch.matmul(Dv_inv_sqrt, X)
-        X = torch.matmul(H.transpose(1,2), X)
-        X = torch.matmul(W_diag, X)
-        X = torch.matmul(De_inv, X)
-        X = torch.matmul(H, X)
-        X = torch.matmul(Dv_inv_sqrt, X)
+    def forward(self, X):
+        # X: B x N x F
+        H = self.H.to(X.device)
+        W = self.W.to(X.device)
+        N = H.shape[0]
+        E = H.shape[1]
+        Dv_inv_sqrt = torch.diag(torch.pow(torch.sum(H, dim=1), -0.5)).to(X.device)  # [N, N]
+        De_inv = torch.diag(torch.pow(torch.sum(H, dim=0), -1)).to(X.device)         # [E, E]
+        W_diag = torch.diag(W).to(X.device)                                          # [E, E]
+        X = torch.matmul(X, self.theta.to(X.device))                                 # [B, N, out_dim]
+
+        # Step 1: Dv^{-1/2} X
+        X = torch.einsum('ij,bjd->bid', Dv_inv_sqrt, X)                              # [B, N, out_dim]
+        # Step 2: H^T X
+        X = torch.einsum('en,bnd->bed', H.t(), X)                                   # [B, E, out_dim]
+        # Step 3: W X
+        X = torch.einsum('ee,bed->bed', W_diag, X)                                  # [B, E, out_dim]
+        # Step 4: De^{-1} X
+        X = torch.einsum('ee,bed->bed', De_inv, X)                                  # [B, E, out_dim]
+        # Step 5: H X
+        X = torch.einsum('ne,bed->bnd', H, X)                                       # [B, N, out_dim]
+        # Step 6: Dv^{-1/2} X
+        X = torch.einsum('ij,bjd->bid', Dv_inv_sqrt, X)                             # [B, N, out_dim]
         return X
 
+# --- Self-adaptive Fusion ---
 class SelfAdaptiveFusion(nn.Module):
     def __init__(self, in_dim, num_features):
         super().__init__()
         self.fc1 = nn.Linear(in_dim * num_features, in_dim)
         self.fc2 = nn.Linear(in_dim, num_features)
-    def forward(self, features):  # list of [B x N x D]
-        concat = torch.cat(features, dim=-1)
-        weights = F.softmax(self.fc2(F.relu(self.fc1(concat))), dim=-1)
-        fused = sum(f * weights[..., i:i+1] for i, f in enumerate(features))
+    def forward(self, features):  # features: list of tensors [B x N x D]
+        concat = torch.cat(features, dim=-1)  # B x N x D*num_features
+        weights = F.softmax(self.fc2(F.relu(self.fc1(concat))), dim=-1)  # B x N x num_features
+        fused = sum(f * weights[..., i:i+1] for i, f in enumerate(features))  # weighted sum
         return fused
 
-class MultiScaleHypergraphBlock(nn.Module):
-    def __init__(self, args, k_nearest, num_fsh_edges, pool_ratio):
+class ScaleAttentionFusion(nn.Module):
+    def __init__(self, hidden_dim, num_scales):
         super().__init__()
-        self.pool = TemporalPooling(mode='mean', ratio=pool_ratio)
-        self.gah_conv = HypergraphConvolution(args.hidden_dim, args.hidden_dim)
-        self.fsh_conv = HypergraphConvolution(args.hidden_dim, args.hidden_dim)
-        self.fusion = SelfAdaptiveFusion(args.hidden_dim, 2)
-        self.k_nearest = k_nearest
-        self.num_fsh_edges = num_fsh_edges
-        self.adj = args.predefined_adj
+        self.attn = nn.MultiheadAttention(hidden_dim, num_heads=2, batch_first=True)
+        self.norm = nn.LayerNorm(hidden_dim)
+        self.num_scales = num_scales
 
-    def forward(self, feature):
-        # feature: B x T x N x D
-        pooled = self.pool(feature)  # B x T' x N x D
-        outputs = []
-        gah_H = build_gah(self.adj, self.k_nearest)  # N x N
-        for t in range(pooled.size(1)):
-            x_t = pooled[:, t, :, :]  # B x N x D
-            fsh_H = build_fsh(x_t, self.num_fsh_edges)  # B x N x E
-            gah_out = self.gah_conv(x_t, gah_H)
-            fsh_out = self.fsh_conv(x_t, fsh_H)
-            fused = self.fusion([gah_out, fsh_out])  # B x N x D
-            outputs.append(fused.unsqueeze(1))
-        fused_feature = torch.cat(outputs, dim=1)  # B x T' x N x D
-        return fused_feature
-
-class FullModel(nn.Module):
-    def __init__(self, args):
-        super().__init__()
-        self.args = args
-        self.time_embedding = TemporalEmbedding(args.hidden_dim)
-        self.node_embedding = nn.Embedding(args.num_nodes, args.hidden_dim)
-        self.input_embedding = nn.Sequential(nn.Linear(args.in_dim, args.hidden_dim), nn.ReLU())
-        self.temporal_attention = TemporalSelfAttention(args.hidden_dim)
-
-        # Multiscale hypergraph blocks
-        self.ms_blocks = nn.ModuleList([
-            MultiScaleHypergraphBlock(args, k_nearest=8, num_fsh_edges=8, pool_ratio=1),
-            MultiScaleHypergraphBlock(args, k_nearest=6, num_fsh_edges=6, pool_ratio=2),
-            MultiScaleHypergraphBlock(args, k_nearest=4, num_fsh_edges=4, pool_ratio=3)
-        ])
-        self.final_fusion = SelfAdaptiveFusion(args.hidden_dim, len(self.ms_blocks))
-        self.pred_head = nn.Sequential(
-            nn.Linear(args.hidden_dim + 5 * 12, args.hidden_dim),
-            nn.Dropout(args.dropout),
-            nn.ReLU(),
-            nn.Linear(args.hidden_dim, args.out_dim * args.seq_out_len)
-        )
-
-    def forward(self, data):
-        feat = data['feat']  # B x T x N x Din
-        tod_idx = data['tod_idx']  # B x T
-        dow_onehot = data['dow_onehot']  # B x T x 7
-        node_idx = torch.arange(0, self.args.num_nodes).to(feat.device)  # N
-
-        input_emb = self.input_embedding(feat)  # B x T x N x D
-        tod_emb, dow_emb = self.time_embedding(tod_idx, dow_onehot)  # B x T x D, B x T x D
-        node_emb = self.node_embedding(node_idx).unsqueeze(0).unsqueeze(0)  # 1 x 1 x N x D
-
-        feature = input_emb + tod_emb.unsqueeze(2) + dow_emb.unsqueeze(2) + node_emb  # B x T x N x D
-        feature = self.temporal_attention(feature)  # B x T x N x D
-
-        # Multiscale hypergraph fusion
-        ms_features = []
-        for block in self.ms_blocks:
-            ms_feat = block(feature)  # B x T' x N x D
-            ms_features.append(ms_feat[:, -1, :, :])  # lấy đặc trưng cuối cùng mỗi scale: B x N x D
-
-        fused_feature = self.final_fusion(ms_features)  # B x N x D
-
-        future_feature = data['target'][:, :, :, -5:].transpose(1, 2).reshape(self.args.batch_size, self.args.num_nodes, -1)
-        if self.args.feat_off == 1:
-            future_feature = self.args.scaler.transform(future_feature)
-        else:
-            future_feature = self.args.scaler[0].transform(future_feature)
-
-        pred = self.pred_head(torch.cat([fused_feature, future_feature], dim=-1))
-        pred = pred.view(pred.size(0), self.args.num_nodes, self.args.out_dim, self.args.seq_out_len)
-        pred = pred.permute(0, 3, 1, 2)  # B x seq_out_len x N x out_dim
-        return pred
-
+    def forward(self, scale_features):  # list of [B x N x D], len=num_scales
+        # Stack: [B, num_scales, N, D] -> [B*N, num_scales, D]
+        B, N, D = scale_features[0].shape
+        x = torch.stack(scale_features, dim=1)  # [B, num_scales, N, D]
+        x = x.permute(0, 2, 1, 3).reshape(B*N, self.num_scales, D)  # [B*N, num_scales, D]
+        attn_out, _ = self.attn(x, x, x)  # [B*N, num_scales, D]
+        attn_out = self.norm(attn_out)
+        # Lấy đặc trưng tổng hợp cho mỗi node: mean hoặc lấy scale cuối
+        fused = attn_out.mean(dim=1).reshape(B, N, D)  # [B, N, D]
+        return fused
 
 class TemporalPooling(nn.Module):
     def __init__(self, mode='mean', ratio=2):
-        super(TemporalPooling, self).__init__()
+        super().__init__()
         self.mode = mode
         self.ratio = ratio
 
     def forward(self, x):
-        x = x.reshape(x.size(0), -1, self.ratio, x.size(2), x.size(3))
+        B, T, N, D = x.shape
+        new_len = T // self.ratio
+        x = x[:, :new_len * self.ratio].reshape(B, new_len, self.ratio, N, D)
         if self.mode == 'max':
             y = x.max(dim=2)[0]
         else:
             y = x.mean(dim=2)
         return y
+
+# --- Main Model ---
+class FullModel(nn.Module):
+    def __init__(self, args, num_dtw_clusters=32):
+        super().__init__()
+        self.args = args
+        self.adj_mx = args.adj_mx  # N x N
+        self.num_nodes = args.adj_mx.shape[0]
+        self.time_embedding = nn.Embedding(48, args.hidden_dim)
+        self.date_embedding = nn.Linear(7, args.hidden_dim)
+        self.node_embedding = nn.Embedding(args.num_nodes, args.hidden_dim)
+        self.input_embedding = nn.Sequential(nn.Linear(args.in_dim, args.hidden_dim), nn.ReLU())
+        self.temporal_attention = TemporalSelfAttention(args.hidden_dim)
+        self.H_adj = self.build_gah_incidence(args.adj_mx, k=args.k_nearest)
+        self.edge_weight_optimizer = HyperedgeWeightOptimizer(self.H_adj.shape[1])
+        self.vertex_weight_optimizer = VertexWeightOptimizer(args.num_nodes)
+        self.dynamic_H = DynamicHypergraphStructure(args.num_nodes, self.H_adj.shape[1])
+        self.gahcn = HypergraphConvolution(args.hidden_dim, args.hidden_dim, self.H_adj)
+        self.fshcn = HypergraphLearning(args, args.num_hyper_edge)
+        self.leaky_relu = nn.LeakyReLU()
+        self.fusion = SelfAdaptiveFusion(args.hidden_dim, 2)
+
+        self.poolings = nn.ModuleList([
+            TemporalPooling('mean', ratio) for ratio in [12, 8, 6, 4, 3, 2, 1]
+        ])
+
+        self.scale_fusion = ScaleAttentionFusion(args.hidden_dim, len(self.poolings))
+
+
+        # self.global_fusion_layer = nn.Sequential(
+        #     nn.Linear(args.hidden_dim * len(self.poolings), args.hidden_dim),
+        #     nn.ReLU()
+        # )
+
+        self.pred_head = nn.Sequential(
+            nn.Linear(args.hidden_dim + 5 * 12, args.hidden_dim),
+            nn.Dropout(args.dropout),
+            nn.ReLU(),
+            nn.Linear(args.hidden_dim, args.out_dim * args.seq_out_len)  # sửa ở đây
+        )
+        self.fusion = SelfAdaptiveFusion(args.hidden_dim, 2)
+
+    def build_gah_incidence(self, adj_mx, k=32):
+        N = adj_mx.shape[0]
+        E = N
+        H = torch.zeros(N, E, device=adj_mx.device)
+        for v in range(N):
+            neighbors = torch.topk(-adj_mx[v], k=k, largest=True).indices
+            H[v, v] = 1
+            H[neighbors, v] = 1
+        return H
+
+    def forward(self, data):
+        feat = data['feat']  # B x T x N x Din
+        tod_idx = data['tod_idx']  # B x T
+        dow_onehot = data['dow_onehot']  # B x T x 7
+        node_idx = torch.arange(0, self.num_nodes).to(feat.device)  # N
+        input_emb = self.input_embedding(feat)
+        time_emb = self.time_embedding(tod_idx).unsqueeze(2)
+        date_emb = self.date_embedding(dow_onehot).unsqueeze(2)
+        node_emb = self.node_embedding(node_idx).unsqueeze(0).unsqueeze(0)
+        feature = input_emb + time_emb + date_emb + node_emb  # B x T x N x D
+
+        feature = self.temporal_attention(feature)
+
+        multi_scale_features = []
+        for pooling in self.poolings:
+            pooled = pooling(feature)  # B x T' x N x D
+            feature_last = pooled[:, -1, :, :]  # B x N x D
+            gah_out = self.leaky_relu(self.gahcn(feature_last))
+            fsh_out = self.fshcn(pooled)
+            fsh_out_last = fsh_out[:, -1, :, :]
+            fused = self.fusion([gah_out, fsh_out_last])  # B x N x D
+            multi_scale_features.append(fused)
+        # Fusion all scales
+        # fused_feature = self.global_fusion_layer(torch.cat(multi_scale_features, dim=-1))  # B x N x D
+
+        fused_feature = self.scale_fusion(multi_scale_features)
+
+        future_feature = data['target'][:, :, :, -5:].transpose(1, 2).reshape(self.args.batch_size, self.num_nodes, -1)
+        if self.args.feat_off == 1:
+            future_feature = self.args.scaler.transform(future_feature)
+        else:
+            future_feature = self.args.scaler[0].transform(future_feature)
+
+        pred = self.pred_head(torch.cat([fused_feature, future_feature], dim=-1))  # B x N x (out_dim * T)
+        pred = pred.view(pred.size(0), self.num_nodes, self.args.out_dim, self.args.seq_out_len)  # B x N x out_dim x T
+        pred = pred.permute(0, 3, 1, 2)  # B x T x N x out_dim
+        return pred
+
+        # Temporal Self-attention
+        # feature = self.temporal_attention(feature)  # B x T x N x D
+
+        # # Prepare for hypergraph convolution: B x N x D
+        # feature_last = feature[:, -1, :, :]  # lấy frame cuối cùng
+
+        # # GAHCN
+        # gah_out = self.leaky_relu(self.gahcn(feature_last))  # B x N x D
+
+        # # FSHCN (HypergraphLearning)
+        # fsh_out = self.fshcn(feature)  # B x T x N x D
+        # fsh_out_last = fsh_out[:, -1, :, :]  # lấy frame cuối cùng, B x N x D
+
+        # # Fusion
+        # fused = self.fusion([gah_out, fsh_out_last])  # B x N x D
+
+        # future_feature = data['target'][:, :, :, -5:].transpose(1, 2).reshape(self.args.batch_size, self.num_nodes, -1)
+        # if self.args.feat_off == 1:
+        #     future_feature = self.args.scaler.transform(future_feature)
+        # else:
+        #     future_feature = self.args.scaler[0].transform(future_feature)
+
+        # pred = self.pred_head(torch.cat([fused, future_feature], dim=-1))  # B x N x (out_dim * T)
+        # pred = pred.view(pred.size(0), self.num_nodes, self.args.out_dim, self.args.seq_out_len)  # B x N x out_dim x T
+        # pred = pred.permute(0, 3, 1, 2)  # B x T x N x out_dim
+        # return pred
