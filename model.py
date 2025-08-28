@@ -208,7 +208,7 @@ class FullModel(nn.Module):
         # self.fusion = SelfAdaptiveFusion(args.hidden_dim, 2)
 
         # Dynamic hypergraph modules
-        self.dynamic_H = DynamicHypergraphStructure(self.num_nodes, args.num_hyper_edge, self.hidden_dim)
+        self.dynamic_H = DynamicHypergraphStructure(self.num_nodes, args.num_hyper_edge, self.in_dim)
         self.edge_weight_optimizer = HyperedgeWeightOptimizer(args.num_hyper_edge)
         self.vertex_weight_optimizer = VertexWeightOptimizer(self.num_nodes)
         self.gahcn = HypergraphConvolution(self.hidden_dim, self.hidden_dim, torch.rand(self.num_nodes, args.num_hyper_edge))
