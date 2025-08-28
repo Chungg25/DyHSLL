@@ -168,11 +168,18 @@ class FullModel(nn.Module):
         self.args = args
         self.adj_mx = args.adj_mx  # N x N
         self.num_nodes = args.adj_mx.shape[0]
-        self.time_embedding = nn.Embedding(48, args.hidden_dim)
-        self.date_embedding = nn.Linear(7, args.hidden_dim)
-        self.node_embedding = nn.Embedding(args.num_nodes, args.hidden_dim)
+        self.hidden_dim = args.hidden_dim
+
+        self.time_of_day_emb = nn.Parameter(torch.empty(48, self.hidden_dim))
+        self.day_of_week_emb = nn.Parameter(torch.empty(7, self.hidden_dim))
+        nn.init.xavier_uniform_(self.time_of_day_emb)
+        nn.init.xavier_uniform_(self.day_of_week_emb)
+        
+        self.node_embedding = nn.Parameter(torch.empty(self.num_nodes, self.hidden_dim))
+        nn.init.xavier_uniform_(self.node_embedding)
+
         self.input_embedding = nn.Sequential(nn.Linear(args.in_dim, args.hidden_dim), nn.ReLU())
-        self.temporal_attention = TemporalSelfAttention(args.hidden_dim)
+        self.temporal_attention = TemporalSelfAttention(self.hidden_dim)
         # self.H_adj = self.build_gah_incidence(args.adj_mx, k=args.k_nearest)
         # self.edge_weight_optimizer = HyperedgeWeightOptimizer(self.H_adj.shape[1])
         # self.vertex_weight_optimizer = VertexWeightOptimizer(args.num_nodes)
@@ -203,19 +210,20 @@ class FullModel(nn.Module):
             self.vertex_weight_optimizer_list.append(VertexWeightOptimizer(args.num_nodes))
             self.dynamic_H_list.append(DynamicHypergraphStructure(args.num_nodes, H_adj.shape[1]))
             self.gahcn_list.append(HypergraphConvolution(args.hidden_dim, args.hidden_dim, H_adj))
+            
+            self.dynamic_H_list.append(DynamicHypergraphStructure(self.num_nodes, H_adj.shape[1]))
             self.fshcn_list.append(HypergraphLearning(args, args.num_hyper_edge))
 
         self.leaky_relu = nn.LeakyReLU()
-        self.fusion = SelfAdaptiveFusion(args.hidden_dim, 2)
-        self.scale_fusion = ScaleAttentionFusion(args.hidden_dim, self.num_scales)
+        self.fusion = SelfAdaptiveFusion(self.hidden_dim, 2)
         self.scale_weights = nn.Parameter(torch.ones(self.num_scales) / self.num_scales, requires_grad=True)
         self.pred_head = nn.Sequential(
-            nn.Linear(args.hidden_dim + 5 * 12, args.hidden_dim),
+            nn.Linear(self.hidden_dim + 5 * 12, self.hidden_dim),
             nn.Dropout(args.dropout),
             nn.ReLU(),
-            nn.Linear(args.hidden_dim, args.out_dim * args.seq_out_len)
+            nn.Linear(self.hidden_dim, args.out_dim * args.seq_out_len)
         )
-        self.fusion = SelfAdaptiveFusion(args.hidden_dim, 2)
+
 
     def build_gah_incidence(self, adj_mx, k=32):
         N = adj_mx.shape[0]
@@ -232,12 +240,13 @@ class FullModel(nn.Module):
         tod_idx = data['tod_idx']  # B x T
         dow_onehot = data['dow_onehot']  # B x T x 7
         node_idx = torch.arange(0, self.num_nodes).to(feat.device)  # N
-        input_emb = self.input_embedding(feat)
-        time_emb = self.time_embedding(tod_idx).unsqueeze(2)
-        date_emb = self.date_embedding(dow_onehot).unsqueeze(2)
-        node_emb = self.node_embedding(node_idx).unsqueeze(0).unsqueeze(0)
-        feature = input_emb + time_emb + date_emb + node_emb  # B x T x N x D
 
+        input_emb = self.input_embedding(feat)  # B x T x N x D
+        time_emb = self.time_of_day_emb[tod_idx].unsqueeze(2)  # B x T x 1 x D
+        date_emb = torch.matmul(dow_onehot, self.day_of_week_emb).unsqueeze(2)  # B x T x 1 x D
+        node_emb = self.node_embedding[node_idx].unsqueeze(0).unsqueeze(0)
+
+        feature = input_emb + time_emb + date_emb + node_emb  # B x T x N x D
         feature = self.temporal_attention(feature)
 
         multi_scale_features = []
@@ -245,23 +254,30 @@ class FullModel(nn.Module):
             pooled = pooling(feature)  # B x T' x N x D
             feature_last = pooled[:, -1, :, :]  # B x N x D
 
-            H_proj = self.dynamic_H_list[i]()
-
-            edge_weights = self.edge_weight_optimizer_list[i]()
-            vertex_weights = self.vertex_weight_optimizer_list[i]()
-            
+            H_gah = self.H_adj_list[i]
+            edge_weights_gah = self.edge_weight_optimizer_list[i]()
+            vertex_weights_gah = self.vertex_weight_optimizer_list[i]()
             gah_out = self.leaky_relu(
                 HypergraphConvolution(
-                    self.args.hidden_dim,
-                    self.args.hidden_dim,
-                    H_proj,
-                    edge_weights
-                )(feature_last * vertex_weights.unsqueeze(-1))
+                    self.hidden_dim,
+                    self.hidden_dim,
+                    H_gah,
+                    edge_weights_gah
+                )(feature_last * vertex_weights_gah.unsqueeze(-1))
             )
 
-            fsh_out = self.fshcn_list[i](pooled)
-            fsh_out_last = fsh_out[:, -1, :, :]
-            fused = self.fusion([gah_out, fsh_out_last])
+            H_fsh = self.dynamic_H_list[i]()
+            edge_weights_fsh = self.edge_weight_optimizer_list[i]()
+            vertex_weights_fsh = self.vertex_weight_optimizer_list[i]()
+            fsh_out = self.leaky_relu(
+                HypergraphConvolution(
+                    self.hidden_dim,
+                    self.hidden_dim,
+                    H_fsh,
+                    edge_weights_fsh
+                )(feature_last * vertex_weights_fsh.unsqueeze(-1))
+            )
+            fused = self.fusion([gah_out, fsh_out])  # B x N x D
             multi_scale_features.append(fused)
         # Fusion all scales
         # fused_feature = self.global_fusion_layer(torch.cat(multi_scale_features, dim=-1))  # B x N x D
