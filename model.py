@@ -183,38 +183,21 @@ class FullModel(nn.Module):
         # self.leaky_relu = nn.LeakyReLU()
         # self.fusion = SelfAdaptiveFusion(args.hidden_dim, 2)
 
-        self.poolings = nn.ModuleList([
-            TemporalPooling('mean', ratio) for ratio in [12, 8, 6, 4, 3, 2, 1]
-        ])
-
-        self.num_scales = len(self.poolings)
-
-        self.H_adj_list = []
-        self.edge_weight_optimizer_list = nn.ModuleList()
-        self.vertex_weight_optimizer_list = nn.ModuleList()
-        self.dynamic_H_list = nn.ModuleList()
-        self.gahcn_list = nn.ModuleList()
-        self.fshcn_list = nn.ModuleList()
-
-
-        for _ in range(self.num_scales):
-            self.dynamic_H_list.append(DynamicHypergraphStructure(self.num_nodes, args.num_hyper_edge))
-            self.edge_weight_optimizer_list.append(HyperedgeWeightOptimizer(args.num_hyper_edge))
-            self.vertex_weight_optimizer_list.append(VertexWeightOptimizer(self.num_nodes))  # <-- Sửa ở đây
-
-            self.gahcn_list.append(HypergraphConvolution(self.hidden_dim, self.hidden_dim, torch.eye(self.num_nodes)))
-            self.fshcn_list.append(HypergraphLearning(args, args.num_hyper_edge))
-
+        # Dynamic hypergraph modules
+        self.dynamic_H = DynamicHypergraphStructure(self.num_nodes, args.num_hyper_edge)
+        self.edge_weight_optimizer = HyperedgeWeightOptimizer(args.num_hyper_edge)
+        self.vertex_weight_optimizer = VertexWeightOptimizer(self.num_nodes)
+        self.gahcn = HypergraphConvolution(self.hidden_dim, self.hidden_dim, torch.rand(self.num_nodes, args.num_hyper_edge))
+        self.fshcn = HypergraphLearning(args, args.num_hyper_edge)
         self.leaky_relu = nn.LeakyReLU()
         self.fusion = SelfAdaptiveFusion(self.hidden_dim, 2)
-        self.scale_weights = nn.Parameter(torch.ones(self.num_scales) / self.num_scales, requires_grad=True)
+
         self.pred_head = nn.Sequential(
             nn.Linear(self.hidden_dim + 5 * 12, self.hidden_dim),
             nn.Dropout(args.dropout),
             nn.ReLU(),
             nn.Linear(self.hidden_dim, args.out_dim * args.seq_out_len)
         )
-
 
     def build_gah_incidence(self, adj_mx, k=32):
         N = adj_mx.shape[0]
@@ -235,40 +218,31 @@ class FullModel(nn.Module):
         input_emb = self.input_embedding(feat)  # B x T x N x D
         time_emb = self.time_of_day_emb[tod_idx].unsqueeze(2)  # B x T x 1 x D
         date_emb = torch.matmul(dow_onehot, self.day_of_week_emb).unsqueeze(2)  # B x T x 1 x D
-        node_emb = self.node_embedding[node_idx].unsqueeze(0).unsqueeze(0)
+        node_emb = self.node_embedding[node_idx].unsqueeze(0).unsqueeze(0)  # 1 x 1 x N x D
 
         feature = input_emb + time_emb + date_emb + node_emb  # B x T x N x D
         feature = self.temporal_attention(feature)
 
-        multi_scale_features = []
-        for i, pooling in enumerate(self.poolings):
-            pooled = pooling(feature)  # B x T' x N x D
-            feature_last = pooled[:, -1, :, :]  # B x N x D
+        # Lấy frame cuối cùng (hoặc bạn có thể dùng toàn bộ chuỗi)
+        feature_last = feature[:, -1, :, :]  # B x N x D
 
-            H_proj = self.dynamic_H_list[i]()  # [N, E]
-            edge_weights = self.edge_weight_optimizer_list[i]()  # [E]
-            vertex_weights = self.vertex_weight_optimizer_list[i]()  # [num_nodes]
-            gah_out = self.leaky_relu(
-                HypergraphConvolution(
-                    self.hidden_dim,
-                    self.hidden_dim,
-                    H_proj,
-                    edge_weights
-                )(feature_last * vertex_weights.unsqueeze(-1))  # feature_last: [B, N, D], vertex_weights: [N]
-            )
+        # Dynamic hypergraph xây dựng lại mỗi forward
+        H_proj = self.dynamic_H()  # [N, E]
+        edge_weights = self.edge_weight_optimizer()  # [E]
+        vertex_weights = self.vertex_weight_optimizer()  # [N]
 
-            fsh_out = self.fshcn_list[i](pooled)
-            fsh_out_last = fsh_out[:, -1, :, :]
-            fused = self.fusion([gah_out, fsh_out_last])
-            multi_scale_features.append(fused)
-        # Fusion all scales
-        # fused_feature = self.global_fusion_layer(torch.cat(multi_scale_features, dim=-1))  # B x N x D
+        gah_out = self.leaky_relu(
+            HypergraphConvolution(
+                self.hidden_dim,
+                self.hidden_dim,
+                H_proj,
+                edge_weights
+            )(feature_last * vertex_weights.unsqueeze(-1))
+        )
 
-        # fused_feature = self.scale_fusion(multi_scale_features)
-
-        # scale_weights = F.softmax(self.scale_weights, dim=0)  # [num_scales]
-        scale_weights = F.softmax(self.scale_weights, dim=0)  # [num_scales]
-        fused_feature = sum(w * f for w, f in zip(scale_weights, multi_scale_features))
+        fsh_out = self.fshcn(feature)
+        fsh_out_last = fsh_out[:, -1, :, :]
+        fused_feature = self.fusion([gah_out, fsh_out_last])
 
         future_feature = data['target'][:, :, :, -5:].transpose(1, 2).reshape(self.args.batch_size, self.num_nodes, -1)
         if self.args.feat_off == 1:
@@ -276,34 +250,7 @@ class FullModel(nn.Module):
         else:
             future_feature = self.args.scaler[0].transform(future_feature)
 
-        pred = self.pred_head(torch.cat([fused_feature, future_feature], dim=-1))  # B x N x (out_dim * T)
-        pred = pred.view(pred.size(0), self.num_nodes, self.args.out_dim, self.args.seq_out_len)  # B x N x out_dim x T
-        pred = pred.permute(0, 3, 1, 2)  # B x T x N x out_dim
+        pred = self.pred_head(torch.cat([fused_feature, future_feature], dim=-1))
+        pred = pred.view(pred.size(0), self.num_nodes, self.args.out_dim, self.args.seq_out_len)
+        pred = pred.permute(0, 3, 1, 2)
         return pred
-
-        # Temporal Self-attention
-        # feature = self.temporal_attention(feature)  # B x T x N x D
-
-        # # Prepare for hypergraph convolution: B x N x D
-        # feature_last = feature[:, -1, :, :]  # lấy frame cuối cùng
-
-        # # GAHCN
-        # gah_out = self.leaky_relu(self.gahcn(feature_last))  # B x N x D
-
-        # # FSHCN (HypergraphLearning)
-        # fsh_out = self.fshcn(feature)  # B x T x N x D
-        # fsh_out_last = fsh_out[:, -1, :, :]  # lấy frame cuối cùng, B x N x D
-
-        # # Fusion
-        # fused = self.fusion([gah_out, fsh_out_last])  # B x N x D
-
-        # future_feature = data['target'][:, :, :, -5:].transpose(1, 2).reshape(self.args.batch_size, self.num_nodes, -1)
-        # if self.args.feat_off == 1:
-        #     future_feature = self.args.scaler.transform(future_feature)
-        # else:
-        #     future_feature = self.args.scaler[0].transform(future_feature)
-
-        # pred = self.pred_head(torch.cat([fused, future_feature], dim=-1))  # B x N x (out_dim * T)
-        # pred = pred.view(pred.size(0), self.num_nodes, self.args.out_dim, self.args.seq_out_len)  # B x N x out_dim x T
-        # pred = pred.permute(0, 3, 1, 2)  # B x T x N x out_dim
-        # return pred
