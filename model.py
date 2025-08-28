@@ -174,7 +174,14 @@ class FullModel(nn.Module):
         self.node_embedding = nn.Embedding(args.num_nodes, args.hidden_dim)
         self.input_embedding = nn.Sequential(nn.Linear(args.in_dim, args.hidden_dim), nn.ReLU())
 
-        self.temporal_attention = TemporalSelfAttention(args.hidden_dim)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=args.hidden_dim,
+            nhead=self.transformer_heads,
+            batch_first=True
+        )
+
+        # self.temporal_attention = TemporalSelfAttention(args.hidden_dim)
+        self.temporal_transformer = nn.TransformerEncoder(encoder_layer, num_layers=self.transformer_layers)
         self.H_adj = self.build_gah_incidence(args.adj_mx, k=args.k_nearest)
         self.edge_weight_optimizer = HyperedgeWeightOptimizer(self.H_adj.shape[1])
         self.vertex_weight_optimizer = VertexWeightOptimizer(args.num_nodes)
