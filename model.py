@@ -96,23 +96,17 @@ class HypergraphConvolution(nn.Module):
         W = self.W.to(X.device)
         N = H.shape[0]
         E = H.shape[1]
-        Dv_inv_sqrt = torch.diag(torch.pow(torch.sum(H, dim=1), -0.5)).to(X.device)  # [N, N]
-        De_inv = torch.diag(torch.pow(torch.sum(H, dim=0), -1)).to(X.device)         # [E, E]
-        W_diag = torch.diag(W).to(X.device)                                          # [E, E]
-        X = torch.matmul(X, self.theta.to(X.device))                                 # [B, N, out_dim]
-
-        # Step 1: Dv^{-1/2} X
-        X = torch.einsum('ij,bjd->bid', Dv_inv_sqrt, X)                              # [B, N, out_dim]
-        # Step 2: H^T X
-        X = torch.einsum('en,bnd->bed', H.t(), X)                                   # [B, E, out_dim]
-        # Step 3: W X
-        X = torch.einsum('ee,bed->bed', W_diag, X)                                  # [B, E, out_dim]
-        # Step 4: De^{-1} X
-        X = torch.einsum('ee,bed->bed', De_inv, X)                                  # [B, E, out_dim]
-        # Step 5: H X
-        X = torch.einsum('ne,bed->bnd', H, X)                                       # [B, N, out_dim]
-        # Step 6: Dv^{-1/2} X
-        X = torch.einsum('ij,bjd->bid', Dv_inv_sqrt, X)                             # [B, N, out_dim]
+        eps = 1e-6
+        Dv_inv_sqrt = torch.diag(torch.pow(torch.sum(H, dim=1) + eps, -0.5)).to(X.device)
+        De_inv = torch.diag(torch.pow(torch.sum(H, dim=0) + eps, -1)).to(X.device)
+        W_diag = torch.diag(W).to(X.device)
+        X = torch.matmul(X, self.theta.to(X.device))
+        X = torch.einsum('ij,bjd->bid', Dv_inv_sqrt, X)
+        X = torch.einsum('en,bnd->bed', H.t(), X)
+        X = torch.einsum('ee,bed->bed', W_diag, X)
+        X = torch.einsum('ee,bed->bed', De_inv, X)
+        X = torch.einsum('ne,bed->bnd', H, X)
+        X = torch.einsum('ij,bjd->bid', Dv_inv_sqrt, X)
         return X
 
 # --- Self-adaptive Fusion ---
