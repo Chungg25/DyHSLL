@@ -178,8 +178,8 @@ class FullModel(nn.Module):
         input_emb = self.input_embedding(feat)
         tod_emb, dow_emb = self.temporal_embedding(tod_onehot, dow_onehot)
 
-        tod_emb = tod_emb.unsqueeze(2).expand(-1, -1, N, -1)    # B x T x N x D
-        dow_emb = dow_emb.unsqueeze(2).expand(-1, -1, N, -1)
+        tod_emb = tod_emb.unsqueeze(2).expand(-1, -1, 266, -1)    # B x T x 266 x D
+        dow_emb = dow_emb.unsqueeze(2).expand(-1, -1, 266, -1)
 
         feature = input_emb + tod_emb + dow_emb  # B x T x N x D
 
