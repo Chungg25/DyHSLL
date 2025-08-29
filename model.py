@@ -10,6 +10,8 @@ class TemporalEmbedding(nn.Module):
 
     def forward(self, tod_onehot, dow_onehot):
         # tod_onehot: B x T x 288, dow_onehot: B x T x 7
+        tod_onehot = tod_onehot.float()  # ép kiểu về float
+        dow_onehot = dow_onehot.float()  # ép kiểu về float
         tod_emb = self.tod_fc(tod_onehot)
         dow_emb = self.dow_fc(dow_onehot)
         return tod_emb, dow_emb
