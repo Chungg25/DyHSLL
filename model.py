@@ -5,7 +5,6 @@ import torch.nn as nn
 from util import norm_adj
 from backbone import GNNLayer
 
-
 class FullModel(nn.Module):
     def __init__(self, args):
         super(FullModel, self).__init__()
@@ -71,7 +70,6 @@ class TemporalSelfAttention(nn.Module):
         out = out.reshape(B, N, T, D).permute(0, 2, 1, 3)  # B x T x N x D
         return out
 
-
 class MainModel(nn.Module):
     def __init__(self, args, adj=None):
         super(MainModel, self).__init__()
@@ -80,56 +78,65 @@ class MainModel(nn.Module):
         args.main_output_dim = args.hidden_dim * 2
         self.backbone = STBackbone(args, args.num_backbone_layers)
         self.hyper = HypergraphLearning(args, self.args.num_hyper_edge)
+        self.gah = GeographicalAdjacencyHypergraphLearning(args, self.args.num_hyper_edge, self.adj)
         self.temporal_attn = TemporalSelfAttention(args.hidden_dim)
         if self.args.use_multi_scale:
             self.multi_scale_STGCN = nn.ModuleList([
                 nn.Sequential(
                     self.temporal_attn,
                     STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
-                                                hyper=self.hyper if not args.GSL else GSL(args, 12))
+                                                hyper=self.hyper if not args.GSL else GSL(args, 12),
+                                                gah=self.gah)
                 ),
                 nn.Sequential(
                     TemporalPooling(mode='mean', ratio=2),
                     self.temporal_attn,
                     STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
-                                                hyper=self.hyper if not args.GSL else GSL(args, 6))
+                                                hyper=self.hyper if not args.GSL else GSL(args, 6),
+                                                gah=self.gah)
                 ),
                 nn.Sequential(
                     TemporalPooling(mode='mean', ratio=3),
                     self.temporal_attn,
                     STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
-                                                hyper=self.hyper if not args.GSL else GSL(args, 4))
+                                                hyper=self.hyper if not args.GSL else GSL(args, 4),
+                                                gah=self.gah)
                 ),
                 nn.Sequential(
                     TemporalPooling(mode='mean', ratio=4),
                     self.temporal_attn,
                     STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
-                                                hyper=self.hyper if not args.GSL else GSL(args, 3))
+                                                hyper=self.hyper if not args.GSL else GSL(args, 3),
+                                                gah=self.gah)
                 ),
                 nn.Sequential(
                     TemporalPooling(mode='mean', ratio=6),
                     self.temporal_attn,
                     STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
-                                                hyper=self.hyper if not args.GSL else GSL(args, 2))
+                                                hyper=self.hyper if not args.GSL else GSL(args, 2),
+                                                gah=self.gah)
                 ),
                 nn.Sequential(
                     TemporalPooling(mode='mean', ratio=12),
                     self.temporal_attn,
                     STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
-                                                hyper=self.hyper if not args.GSL else GSL(args, 1))
+                                                hyper=self.hyper if not args.GSL else GSL(args, 1),
+                                                gah=self.gah)
                 )
             ])
         elif args.biscale:
             self.multi_scale_STGCN = nn.ModuleList([
                 nn.Sequential(STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
-                                                          hyper=self.hyper if not args.GSL else GSL(args, 12))),
+                                                          hyper=self.hyper if not args.GSL else GSL(args, 12),
+                                                          gah=self.gah)),
                 nn.Sequential(TemporalPooling(mode='mean', ratio=3),
                               STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
-                                                          hyper=self.hyper if not args.GSL else GSL(args, 4)))
+                                                          hyper=self.hyper if not args.GSL else GSL(args, 4),
+                                                          gah=self.gah))
             ])
         else:
             self.multi_scale_STGCN = nn.ModuleList([
-                nn.Sequential(STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers, hyper=self.hyper)),
+                nn.Sequential(STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers, hyper=self.hyper, gah=self.gah)),
             ])
         self.global_fusion_layer = nn.Sequential(
             nn.Linear(args.hidden_dim * len(self.multi_scale_STGCN), args.main_output_dim // 2),
@@ -155,6 +162,59 @@ class MainModel(nn.Module):
         feature = torch.cat([local_feature, global_feature], dim=-1)
         return feature
 
+class HypergraphConvolution(nn.Module):
+    def __init__(self, in_dim, out_dim, num_edges):
+        super(HypergraphConvolution, self).__init__()
+        self.theta = nn.Parameter(torch.randn(in_dim, out_dim) / math.sqrt(out_dim))
+        self.num_edges = num_edges
+
+    def forward(self, X, H, W):
+        # X: B x T x N x D
+        # H: N x E (hyperedge incidence matrix)
+        # W: E (importance of each hyperedge)
+        B, T, N, D = X.shape
+        X = X.reshape(B * T, N, D)
+        Dv = torch.diag(H.sum(dim=1))  # N x N
+        De = torch.diag(H.sum(dim=0))  # E x E
+        Dv_inv_sqrt = torch.diag(1.0 / torch.sqrt(H.sum(dim=1) + 1e-6))
+        De_inv = torch.diag(1.0 / (H.sum(dim=0) + 1e-6))
+        HW = H * W.unsqueeze(0)  # N x E
+        out = Dv_inv_sqrt @ HW @ De_inv @ H.t() @ Dv_inv_sqrt @ X @ self.theta  # (B*T) x N x out_dim
+        out = out.reshape(B, T, N, -1)
+        return out
+
+class GeographicalAdjacencyHypergraphLearning(nn.Module):
+    def __init__(self, args, num_edges, adj):
+        super(GeographicalAdjacencyHypergraphLearning, self).__init__()
+        self.args = args
+        self.num_edges = num_edges
+        self.adj = adj  # N x N (distance or adjacency matrix)
+        self.gah_conv = HypergraphConvolution(args.hidden_dim, args.hidden_dim, num_edges)
+        self.norm = nn.LayerNorm(args.hidden_dim)
+        self.activation = nn.LeakyReLU()
+
+        # Build hyperedge incidence matrix H and importance W
+        self.H, self.W = self.construct_GAH(self.adj, num_edges)
+
+    def construct_GAH(self, adj, k):
+        # adj: N x N, distance matrix (smaller = closer)
+        N = adj.shape[0]
+        H = torch.zeros(N, N, dtype=torch.float32)
+        W = torch.ones(N, dtype=torch.float32)
+        for v in range(N):
+            distances = adj[v].clone()
+            distances[v] = float('inf')
+            nearest_idx = torch.topk(-distances, k, largest=True).indices.tolist()
+            H[v, v] = 1.0
+            for idx in nearest_idx:
+                H[idx, v] = 1.0
+        return H, W
+
+    def forward(self, x):  # B x T x N x D
+        y = self.gah_conv(x, self.H.to(x.device), self.W.to(x.device))
+        y = self.activation(y)
+        y_final = self.norm(y + x)
+        return y_final
 
 class STBackbone(nn.Module):
     def __init__(self, args, num_layers):
@@ -171,9 +231,8 @@ class STBackbone(nn.Module):
         feature = torch.stack(feature_list, dim=3).max(dim=3)[0]  # B x T x N x D
         return feature
 
-
 class STGCNWithHypergraphLearning(nn.Module):
-    def __init__(self, args, adj=None, depth=3, num_edges=32, hyper=None):
+    def __init__(self, args, adj=None, depth=3, num_edges=32, hyper=None, gah=None):
         super(STGCNWithHypergraphLearning, self).__init__()
         self.args = args
         self.depth = depth
@@ -181,6 +240,7 @@ class STGCNWithHypergraphLearning(nn.Module):
         self.stgcns = nn.ModuleList([SpatialTemporalInteractiveGCN(args, self.adj, window_size=args.winsize)
                                      for _ in range(depth)])
         self.hypers = HypergraphLearning(args, num_edges) if hyper is None else hyper
+        self.gah = GeographicalAdjacencyHypergraphLearning(args, num_edges, self.adj) if gah is None else gah
         self.dropout = nn.Dropout(args.dropout)
 
     def forward(self, x):
@@ -190,15 +250,25 @@ class STGCNWithHypergraphLearning(nn.Module):
             if self.args.use_hyper_graph and self.args.use_interactive:
                 out_1 = self.stgcns[i](x)
                 out_2 = self.hypers(x)
-                x = (out_1 + out_2) / 2
+                out_3 = self.gah(x)
+                # Self-adaptive fusion for GAH and FSH
+                fusion_cat = torch.cat([out_2, out_3], dim=-1)
+                fusion_score = nn.Linear(fusion_cat.shape[-1], 2).to(x.device)(fusion_cat)
+                fusion_weight = nn.Softmax(dim=-1)(fusion_score)
+                x = out_2 * fusion_weight[..., 0:1] + out_3 * fusion_weight[..., 1:2]
+                x = (out_1 + x) / 2
             elif self.args.use_hyper_graph:
-                x = self.hypers(x)
+                out_2 = self.hypers(x)
+                out_3 = self.gah(x)
+                fusion_cat = torch.cat([out_2, out_3], dim=-1)
+                fusion_score = nn.Linear(fusion_cat.shape[-1], 2).to(x.device)(fusion_cat)
+                fusion_weight = nn.Softmax(dim=-1)(fusion_score)
+                x = out_2 * fusion_weight[..., 0:1] + out_3 * fusion_weight[..., 1:2]
             else:
                 x = self.stgcns[i](x)
             if i != self.depth - 1:
                 x = self.dropout(x)
         return x
-
 
 class SpatialTemporalInteractiveGCN(nn.Module):
     def __init__(self, args, adj=None, window_size=2):
@@ -233,7 +303,6 @@ class SpatialTemporalInteractiveGCN(nn.Module):
         y_final = self.norm(next_feat + x)
         return y_final
 
-
 class HypergraphLearning(nn.Module):
     def __init__(self, args, num_edges):
         super(HypergraphLearning, self).__init__()
@@ -257,7 +326,6 @@ class HypergraphLearning(nn.Module):
         y_final = self.norm(y + x)
         return y_final
 
-
 class GSL(nn.Module):
     def __init__(self, args, temporal_length):
         super(GSL, self).__init__()
@@ -272,7 +340,6 @@ class GSL(nn.Module):
         y = feat.reshape(x.size(0), x.size(1), x.size(2), x.size(3))
         y_final = self.norm(y + x)
         return y_final
-
 
 class TemporalPooling(nn.Module):
     def __init__(self, mode='mean', ratio=2):
