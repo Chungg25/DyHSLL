@@ -108,8 +108,9 @@ class MultiScaleHypergraphModule(nn.Module):
                 'gah': GeographicalAdjacencyHypergraphLearning(args, args.num_hyper_edge, adj)
             }) for r in scales
         ])
-        self.fusion_fc1 = nn.Linear(args.hidden_dim * 2 * len(scales), args.hidden_dim)
-        self.fusion_fc2 = nn.Linear(args.hidden_dim, len(scales))
+        self.num_scales = len(scales)
+        self.fusion_fc1 = nn.Linear(args.hidden_dim * 2 * self.num_scales, args.hidden_dim)
+        self.fusion_fc2 = nn.Linear(args.hidden_dim, self.num_scales)
         self.relu = nn.ReLU()
         self.softmax = nn.Softmax(dim=-1)
 
@@ -125,7 +126,9 @@ class MultiScaleHypergraphModule(nn.Module):
             fusion_weight = nn.Softmax(dim=-1)(fusion_score)
             fused = fsh * fusion_weight[..., 0:1] + gah * fusion_weight[..., 1:2]
             scale_features.append(fused)
+        # Đảm bảo concat_feature có shape [B, N, hidden_dim * 2 * num_scales]
         concat_feature = torch.cat([f[:, -1, :, :] for f in scale_features], dim=-1)  # B x N x (2D * num_scales)
+        concat_feature = concat_feature.reshape(concat_feature.shape[0], concat_feature.shape[1], -1)
         fusion_score = self.fusion_fc2(self.relu(self.fusion_fc1(concat_feature)))
         fusion_weight = self.softmax(fusion_score)  # B x N x num_scales
         fusion_weight = fusion_weight.unsqueeze(-1)
