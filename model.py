@@ -80,6 +80,7 @@ class MainModel(nn.Module):
         args.main_output_dim = args.hidden_dim * 2
         self.backbone = STBackbone(args, args.num_backbone_layers)
         self.hyper = HypergraphLearning(args, self.args.num_hyper_edge)
+        self.temporal_attn = TemporalSelfAttention(args.hidden_dim)
         if self.args.use_multi_scale:
             self.multi_scale_STGCN = nn.ModuleList([
                 nn.Sequential(
