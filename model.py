@@ -172,7 +172,7 @@ class FullModel(nn.Module):
 
         # Chuyển tod_idx thành one-hot
         B, T = tod_idx.shape
-        tod_onehot = torch.zeros(B, T, 288, device=tod_idx.device)
+        tod_onehot = torch.zeros(B, T, 48, device=tod_idx.device)
         tod_onehot.scatter_(2, tod_idx.unsqueeze(-1), 1)
 
         input_emb = self.input_embedding(feat)
