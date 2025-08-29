@@ -2,20 +2,6 @@ import math
 import torch
 import torch.nn as nn
 
-class TemporalEmbedding(nn.Module):
-    def __init__(self, hidden_dim):
-        super().__init__()
-        self.tod_fc = nn.Linear(48, hidden_dim)
-        self.dow_fc = nn.Linear(7, hidden_dim)
-
-    def forward(self, tod_onehot, dow_onehot):
-        # tod_onehot: B x T x 288, dow_onehot: B x T x 7
-        tod_onehot = tod_onehot.float()  # ép kiểu về float
-        dow_onehot = dow_onehot.float()  # ép kiểu về float
-        tod_emb = self.tod_fc(tod_onehot)
-        dow_emb = self.dow_fc(dow_onehot)
-        return tod_emb, dow_emb
-
 class TemporalSelfAttention(nn.Module):
     def __init__(self, hidden_dim):
         super().__init__()
@@ -24,7 +10,6 @@ class TemporalSelfAttention(nn.Module):
         self.WV = nn.Linear(hidden_dim, hidden_dim)
 
     def forward(self, x):
-        # x: B x T x N x D
         B, T, N, D = x.shape
         x_reshape = x.permute(0, 2, 1, 3).reshape(B * N, T, D)
         Q = self.WQ(x_reshape)
@@ -114,14 +99,14 @@ class TemporalPooling(nn.Module):
 class MultiScaleHypergraphModule(nn.Module):
     def __init__(self, args, adj):
         super().__init__()
-        scales = [12, 6, 4, 3, 2, 1]
+        scales = getattr(args, 'scales', [1, 2, 3, 4])
         self.scales = nn.ModuleList([
-            nn.Sequential(
-                TemporalPooling(mode='mean', ratio=r),
-                TemporalSelfAttention(args.hidden_dim),
-                HypergraphLearning(args, args.num_hyper_edge),
-                GeographicalAdjacencyHypergraphLearning(args, args.num_hyper_edge, adj)
-            ) for r in scales
+            nn.ModuleDict({
+                'pool': TemporalPooling(mode='mean', ratio=r),
+                'attn': TemporalSelfAttention(args.hidden_dim),
+                'fsh': HypergraphLearning(args, args.num_hyper_edge),
+                'gah': GeographicalAdjacencyHypergraphLearning(args, args.num_hyper_edge, adj)
+            }) for r in scales
         ])
         self.fusion_fc1 = nn.Linear(args.hidden_dim * 2 * len(scales), args.hidden_dim)
         self.fusion_fc2 = nn.Linear(args.hidden_dim, len(scales))
@@ -131,21 +116,19 @@ class MultiScaleHypergraphModule(nn.Module):
     def forward(self, x):
         scale_features = []
         for scale in self.scales:
-            # FSH
-            fsh = scale[2](scale[1](scale[0](x)))
-            # GAH
-            gah = scale[3](scale[1](scale[0](x)))
-            # Fusion FSH & GAH at each scale
+            pooled = scale['pool'](x)
+            attned = scale['attn'](pooled)
+            fsh = scale['fsh'](attned)
+            gah = scale['gah'](attned)
             fusion_cat = torch.cat([fsh, gah], dim=-1)
             fusion_score = nn.Linear(fusion_cat.shape[-1], 2).to(x.device)(fusion_cat)
             fusion_weight = nn.Softmax(dim=-1)(fusion_score)
             fused = fsh * fusion_weight[..., 0:1] + gah * fusion_weight[..., 1:2]
             scale_features.append(fused)
-        # Tổng hợp các scale
         concat_feature = torch.cat([f[:, -1, :, :] for f in scale_features], dim=-1)  # B x N x (2D * num_scales)
         fusion_score = self.fusion_fc2(self.relu(self.fusion_fc1(concat_feature)))
         fusion_weight = self.softmax(fusion_score)  # B x N x num_scales
-        fusion_weight = fusion_weight.unsqueeze(-1)  # B x N x num_scales x 1
+        fusion_weight = fusion_weight.unsqueeze(-1)
         stacked = torch.stack([f[:, -1, :, :] for f in scale_features], dim=2)  # B x N x num_scales x 2D
         fused_final = (stacked * fusion_weight).sum(dim=2)  # B x N x 2D
         return fused_final
@@ -155,7 +138,6 @@ class FullModel(nn.Module):
         super().__init__()
         self.args = args
         self.out_dim = args.out_dim
-        self.temporal_embedding = TemporalEmbedding(args.hidden_dim)
         self.input_embedding = nn.Sequential(nn.Linear(args.in_dim, args.hidden_dim), nn.ReLU())
         self.multi_scale_hyper = MultiScaleHypergraphModule(args, args.predefined_adj)
         self.pred_head = nn.Sequential(
@@ -167,24 +149,9 @@ class FullModel(nn.Module):
 
     def forward(self, data):
         feat = data['feat']  # B x T x N x Din
-        tod_idx = data['tod_idx']  # B x T
-        dow_onehot = data['dow_onehot']  # B x T x 7
+        input_emb = self.input_embedding(feat)  # B x T x N x D
 
-        # Chuyển tod_idx thành one-hot
-        B, T = tod_idx.shape
-        tod_onehot = torch.zeros(B, T, 48, device=tod_idx.device)
-        tod_onehot.scatter_(2, tod_idx.unsqueeze(-1), 1)
-
-        input_emb = self.input_embedding(feat)
-        tod_emb, dow_emb = self.temporal_embedding(tod_onehot, dow_onehot)
-
-        tod_emb = tod_emb.unsqueeze(2).expand(-1, -1, 266, -1)    # B x T x 266 x D
-        dow_emb = dow_emb.unsqueeze(2).expand(-1, -1, 266, -1)
-
-        feature = input_emb + tod_emb + dow_emb  # B x T x N x D
-
-
-        fused_feature = self.multi_scale_hyper(feature)  # B x N x 2D
+        fused_feature = self.multi_scale_hyper(input_emb)  # B x N x 2D
 
         future_feature = data['target'][:, :, :, -5:].transpose(1, 2).reshape(self.args.batch_size, self.args.num_nodes, -1)
         if self.args.feat_off == 1:
