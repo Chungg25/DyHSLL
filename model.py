@@ -165,7 +165,7 @@ class FullModel(nn.Module):
 
     def forward(self, data):
         feat = data['feat']  # B x T x N x Din
-        tod_onehot = data['tod_onehot']  # B x T x 288
+        tod_onehot = data['tod_idx']  # B x T x 288
         dow_onehot = data['dow_onehot']  # B x T x 7
         input_emb = self.input_embedding(feat)
         tod_emb, dow_emb = self.temporal_embedding(tod_onehot, dow_onehot)
