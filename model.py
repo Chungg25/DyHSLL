@@ -112,16 +112,17 @@ class TemporalPooling(nn.Module):
 class MultiScaleHypergraphModule(nn.Module):
     def __init__(self, args, adj):
         super().__init__()
+        scales = [12, 6, 4, 3, 2, 1]
         self.scales = nn.ModuleList([
             nn.Sequential(
                 TemporalPooling(mode='mean', ratio=r),
                 TemporalSelfAttention(args.hidden_dim),
                 HypergraphLearning(args, args.num_hyper_edge),
                 GeographicalAdjacencyHypergraphLearning(args, args.num_hyper_edge, adj)
-            ) for r in args.scales
+            ) for r in scales
         ])
-        self.fusion_fc1 = nn.Linear(args.hidden_dim * 2 * len(args.scales), args.hidden_dim)
-        self.fusion_fc2 = nn.Linear(args.hidden_dim, len(args.scales))
+        self.fusion_fc1 = nn.Linear(args.hidden_dim * 2 * len(scales), args.hidden_dim)
+        self.fusion_fc2 = nn.Linear(args.hidden_dim, len(scales))
         self.relu = nn.ReLU()
         self.softmax = nn.Softmax(dim=-1)
 
