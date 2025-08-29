@@ -181,15 +181,12 @@ class MultiLayerHypergraphBlock(nn.Module):
         fsh_out = x
         gah_out = x
         for fsh, gah in zip(self.fsh_layers, self.gah_layers):
-            # FSH: đặc trưng chuỗi
             fsh_out = fsh(fsh_out)
-            # GAH: đặc trưng không gian, dùng trọng số tối ưu hóa
-            H = self.dynamic_H()
-            W = self.edge_weight_optimizer()
-            gah_out = self.leaky_relu(gah(gah_out))
-        fused = self.fusion([gah_out, fsh_out])  # B x N x D
+            # Lấy frame cuối cùng cho GAH
+            gah_input = gah_out[:, -1, :, :] if gah_out.dim() == 4 else gah_out  # B x N x D
+            gah_out = self.leaky_relu(gah(gah_input))
+        fused = self.fusion([gah_out, fsh_out[:, -1, :, :] if fsh_out.dim() == 4 else fsh_out])  # B x N x D
         return fused
-
 class FullModel(nn.Module):
     def __init__(self, args, num_dtw_clusters=32):
         super().__init__()
