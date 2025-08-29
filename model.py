@@ -5,7 +5,7 @@ import torch.nn as nn
 class TemporalEmbedding(nn.Module):
     def __init__(self, hidden_dim):
         super().__init__()
-        self.tod_fc = nn.Linear(288, hidden_dim)
+        self.tod_fc = nn.Linear(48, hidden_dim)
         self.dow_fc = nn.Linear(7, hidden_dim)
 
     def forward(self, tod_onehot, dow_onehot):
