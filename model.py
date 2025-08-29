@@ -9,8 +9,6 @@ import os
 
 # Import xPatch components
 from layers.decomp import DECOMP
-from layers.ema import EMA
-from layers.dema import DEMA
 
 class HypergraphConstruction:
     """Construct GAH and FSH hypergraphs"""
@@ -185,15 +183,16 @@ class TemporalEmbedding(nn.Module):
         temporal_emb = self.norm(time_emb + day_emb)  # [B, T, D]
         return temporal_emb
 
-class TemporalProcessingModule(nn.Module):
-    """Temporal processing using xPatch decomposition without patching"""
+class xPatchTemporalModule(nn.Module):
+    """xPatch-based temporal processing with decomposition"""
     def __init__(self, args):
         super().__init__()
         self.seq_len = args.seq_in_len
         self.pred_len = args.seq_out_len
         self.hidden_dim = args.hidden_dim
+        self.num_nodes = args.num_nodes
         
-        # Decomposition
+        # xPatch decomposition
         self.ma_type = getattr(args, 'ma_type', 'ema')
         self.alpha = getattr(args, 'alpha', 0.2)
         self.beta = getattr(args, 'beta', 0.1)
@@ -201,25 +200,30 @@ class TemporalProcessingModule(nn.Module):
         if self.ma_type != 'reg':
             self.decomp = DECOMP(self.ma_type, self.alpha, self.beta)
         
-        # Temporal modeling networks (simplified from xPatch without patching)
-        # Seasonal component processing
+        # xPatch networks for seasonal and trend components
         self.seasonal_net = nn.Sequential(
-            nn.Linear(self.seq_len, self.pred_len * 2),
+            nn.Linear(self.seq_len, 64),
             nn.GELU(),
-            nn.BatchNorm1d(self.hidden_dim),
-            nn.Linear(self.pred_len * 2, self.pred_len)
+            nn.Dropout(0.1),
+            nn.Linear(64, 32),
+            nn.GELU(),
+            nn.Linear(32, self.pred_len)
         )
         
-        # Trend component processing
         self.trend_net = nn.Sequential(
-            nn.Linear(self.seq_len, self.pred_len * 2),
+            nn.Linear(self.seq_len, 64),
             nn.GELU(),
-            nn.BatchNorm1d(self.hidden_dim),
-            nn.Linear(self.pred_len * 2, self.pred_len)
+            nn.Dropout(0.1),
+            nn.Linear(64, 32),
+            nn.GELU(),
+            nn.Linear(32, self.pred_len)
         )
         
-        # Final fusion
-        self.fusion_net = nn.Linear(self.pred_len * 2, self.pred_len)
+        # Fusion layer
+        self.fusion_layer = nn.Sequential(
+            nn.Linear(self.pred_len * 2, self.pred_len),
+            nn.GELU()
+        )
         
     def forward(self, x):
         """
@@ -228,29 +232,29 @@ class TemporalProcessingModule(nn.Module):
         """
         B, T, N, D = x.shape
         
-        # Process each feature dimension and node independently
-        x = x.permute(0, 2, 3, 1)  # [B, N, D, T]
-        x = x.reshape(B * N * D, T)  # [B*N*D, T]
+        # Reshape for processing: [B*N*D, T]
+        x_reshaped = x.permute(0, 2, 3, 1).reshape(B * N * D, T)
         
         if self.ma_type == 'reg':
-            # No decomposition, direct processing
-            seasonal_out = self.seasonal_net(x)  # [B*N*D, pred_len]
-            trend_out = self.trend_net(x)  # [B*N*D, pred_len]
+            # No decomposition
+            seasonal_out = self.seasonal_net(x_reshaped)  # [B*N*D, pred_len]
+            trend_out = self.trend_net(x_reshaped)  # [B*N*D, pred_len]
         else:
-            # Decomposition into seasonal and trend
-            seasonal, trend = self.decomp(x.unsqueeze(-1))  # [B*N*D, T, 1]
+            # xPatch decomposition
+            seasonal, trend = self.decomp(x_reshaped.unsqueeze(-1))  # [B*N*D, T, 1]
             seasonal = seasonal.squeeze(-1)  # [B*N*D, T]
             trend = trend.squeeze(-1)  # [B*N*D, T]
             
+            # Process seasonal and trend separately
             seasonal_out = self.seasonal_net(seasonal)  # [B*N*D, pred_len]
             trend_out = self.trend_net(trend)  # [B*N*D, pred_len]
         
-        # Fusion
+        # Fusion of seasonal and trend
         combined = torch.cat([seasonal_out, trend_out], dim=-1)  # [B*N*D, pred_len*2]
-        output = self.fusion_net(combined)  # [B*N*D, pred_len]
+        output = self.fusion_layer(combined)  # [B*N*D, pred_len]
         
-        # Reshape back
-        output = output.reshape(B, N, D, self.pred_len)  # [B, N, D, pred_len]
+        # Reshape back to [B, pred_len, N, D]
+        output = output.reshape(B, N, D, self.pred_len)
         output = output.permute(0, 3, 1, 2)  # [B, pred_len, N, D]
         
         return output
@@ -269,8 +273,8 @@ class FullModel(nn.Module):
         self.num_nodes = args.num_nodes
         self.out_dim = args.out_dim
         
-        # Input embedding for traffic data (pick + drop)
-        self.input_embedding = nn.Linear(args.in_dim, self.hidden_dim)
+        # Input embedding for traffic data (pick + drop = 2 dimensions)
+        self.input_embedding = nn.Linear(2, self.hidden_dim)  # Fixed to 2 for pick/drop
         
         # Temporal embedding
         self.temporal_embedding = TemporalEmbedding(self.hidden_dim)
@@ -289,21 +293,21 @@ class FullModel(nn.Module):
             args.dropout
         )
         
-        # Temporal processing module (xPatch-based)
-        self.temporal_processing = TemporalProcessingModule(args)
+        # xPatch temporal processing module
+        self.xpatch_temporal = xPatchTemporalModule(args)
         
         # Final prediction head
         self.pred_head = nn.Sequential(
-            nn.Linear(self.hidden_dim, self.hidden_dim),
+            nn.Linear(self.hidden_dim, self.hidden_dim // 2),
             nn.GELU(),
             nn.Dropout(args.dropout),
-            nn.Linear(self.hidden_dim, self.out_dim)
+            nn.Linear(self.hidden_dim // 2, self.out_dim)
         )
         
     def construct_hypergraphs(self):
         """Construct GAH and FSH hypergraphs"""
         # Load adjacency matrix
-        adj_data_path = f'data/{self.args.adj_data}' if hasattr(self.args, 'adj_data') and self.args.adj_data else 'NYC/adj_mx_taxi_2.pkl'
+        adj_data_path = f'{self.args.adj_data}' if hasattr(self.args, 'adj_data') and self.args.adj_data else 'NYC/adj_mx_taxi_2.pkl'
         
         try:
             with open(adj_data_path, 'rb') as f:
@@ -319,7 +323,7 @@ class FullModel(nn.Module):
             adj_matrix = torch.from_numpy(adj_matrix).float()
         
         # Load DTW distance matrix
-        dtw_data_path = 'data/NYC_dtw_distance.npy'
+        dtw_data_path = 'NYC_dtw_distance.npy'
         try:
             dtw_distance = np.load(dtw_data_path)
         except FileNotFoundError:
@@ -346,7 +350,7 @@ class FullModel(nn.Module):
         
         B, T, N, _ = feat.shape
         
-        # Input embedding (use first 2 dimensions for pick/drop)
+        # Input embedding (use first 2 dimensions for pick/drop only)
         x = self.input_embedding(feat[:, :, :, :2])  # [B, T, N, D]
         
         # Add temporal embeddings
@@ -362,13 +366,13 @@ class FullModel(nn.Module):
         x = x + temporal_emb + node_emb  # [B, T, N, D]
         
         # Apply spatial hypergraph processing
-        x = self.spatial_hypergraph(x)  # [B, T, N, D]
+        x_spatial = self.spatial_hypergraph(x)  # [B, T, N, D]
         
-        # Apply temporal processing (xPatch-based)
-        x_pred = self.temporal_processing(x)  # [B, pred_len, N, D]
+        # Apply xPatch temporal processing
+        x_temporal = self.xpatch_temporal(x_spatial)  # [B, pred_len, N, D]
         
         # Final prediction
-        output = self.pred_head(x_pred)  # [B, pred_len, N, out_dim]
+        output = self.pred_head(x_temporal)  # [B, pred_len, N, out_dim]
         
         return output
 
