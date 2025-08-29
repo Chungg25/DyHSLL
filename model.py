@@ -177,7 +177,12 @@ class FullModel(nn.Module):
 
         input_emb = self.input_embedding(feat)
         tod_emb, dow_emb = self.temporal_embedding(tod_onehot, dow_onehot)
+
+        tod_emb = tod_emb.unsqueeze(2).expand(-1, -1, N, -1)    # B x T x N x D
+        dow_emb = dow_emb.unsqueeze(2).expand(-1, -1, N, -1)
+
         feature = input_emb + tod_emb + dow_emb  # B x T x N x D
+
 
         fused_feature = self.multi_scale_hyper(feature)  # B x N x 2D
 
