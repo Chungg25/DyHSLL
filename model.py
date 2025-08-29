@@ -167,8 +167,14 @@ class FullModel(nn.Module):
 
     def forward(self, data):
         feat = data['feat']  # B x T x N x Din
-        tod_onehot = data['tod_idx']  # B x T x 288
+        tod_idx = data['tod_idx']  # B x T
         dow_onehot = data['dow_onehot']  # B x T x 7
+
+        # Chuyển tod_idx thành one-hot
+        B, T = tod_idx.shape
+        tod_onehot = torch.zeros(B, T, 288, device=tod_idx.device)
+        tod_onehot.scatter_(2, tod_idx.unsqueeze(-1), 1)
+
         input_emb = self.input_embedding(feat)
         tod_emb, dow_emb = self.temporal_embedding(tod_onehot, dow_onehot)
         feature = input_emb + tod_emb + dow_emb  # B x T x N x D
