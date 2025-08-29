@@ -38,6 +38,9 @@ parser.add_argument('--use_hyper_graph', type=str_to_bool, default=True)
 parser.add_argument('--use_interactive', type=str_to_bool, default=True)
 parser.add_argument('--GSL', type=str_to_bool, default=False)
 parser.add_argument('--biscale', type=str_to_bool, default=False)
+parser.add_argument('--ma_type', type=str, default='ema', choices=['ema', 'dema', 'reg'])
+parser.add_argument('--alpha', type=float, default=0.3)
+parser.add_argument('--beta', type=float, default=0.3)
 
 # running params
 parser.add_argument('--seed', type=int, default=0)
