@@ -54,7 +54,7 @@ class PDG2Seq_GCN(nn.Module):
 
         x_g = self.gcn(x, adj)
 
-        weights = torch.einsum('nd,dkio->nkio', node_embedding, self.weights_pool)    #[B,N,embed_dim]*[embed_dim,chen_k,dim_in,dim_out] =[B,N,cheb_k,dim_in,dim_out]
+        weights = torch.einsum('bnd,dkio->bnkio', node_embedding, self.weights_pool)    #[B,N,embed_dim]*[embed_dim,chen_k,dim_in,dim_out] =[B,N,cheb_k,dim_in,dim_out]
                                                                                   #[N, cheb_k, dim_in, dim_out]=[nodes,cheb_k,hidden_size,output_dim]
         bias = torch.matmul(node_embedding, self.bias_pool) #N, dim_out                 #[che_k,nodes,nodes]* [batch,nodes,dim_in]=[B, cheb_k, N, dim_in]
 

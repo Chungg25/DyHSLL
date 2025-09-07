@@ -52,8 +52,8 @@ class PDG2SeqCell(nn.Module):  #这个模块只进行GRU内部的更新，所以
         input_and_state = torch.cat((x, state), dim=-1)
         filter1 = self.fc1(input_and_state)
         filter2 = self.fc2(input_and_state)
-        nodevec1 = torch.tanh(torch.einsum('bd,bnd->bnd', node_embeddings[0], filter1))
-        nodevec2 = torch.tanh(torch.einsum('bd,bnd->bnd', node_embeddings[1], filter2))
+        nodevec1 = torch.tanh(torch.einsum('bnd,bnd->bnd', node_embeddings[0], filter1))
+        nodevec2 = torch.tanh(torch.einsum('bnd,bnd->bnd', node_embeddings[1], filter2))
         adj = torch.matmul(nodevec1, nodevec2.transpose(2, 1)) - torch.matmul(
             nodevec2, nodevec1.transpose(2, 1))
         adj1 = PDG2SeqCell.preprocessing(F.relu(adj))
