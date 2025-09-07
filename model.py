@@ -5,7 +5,7 @@ import torch.nn as nn
 from util import norm_adj
 from backbone import GNNLayer
 import torch.nn.functional as F
-from model.PDG2SeqCell import PDG2SeqCell
+from Model.PDG2SeqCell import PDG2SeqCell
 
 
 
@@ -114,7 +114,7 @@ class MainModel(nn.Module):
 
         fused_local = self.attention_fusion(local_features)    # [B, N, D]
         fused_global = self.attention_fusion(global_features)
-        
+
         feature = torch.cat([local_feature, global_feature], dim=-1)
         return feature
 

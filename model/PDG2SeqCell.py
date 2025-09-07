@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from model.PDG2Seq_DGCN import PDG2Seq_GCN
+from Model.PDG2Seq_DGCN import PDG2Seq_GCN
 from collections import OrderedDict
 import torch.nn.functional as F
 class FC(nn.Module):
