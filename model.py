@@ -4,16 +4,13 @@ import torch
 import torch.nn as nn
 from util import norm_adj
 from backbone import GNNLayer
-import torch.nn.functional as F
-from Model.PDG2SeqCell import PDG2SeqCell
-
 
 
 class FullModel(nn.Module):
     def __init__(self, args):
         super(FullModel, self).__init__()
         self.args = args
-        self.time_embedding = nn.Embedding(288, args.hidden_dim)
+        self.time_embedding = nn.Embedding(48, args.hidden_dim)
         self.date_embedding = nn.Linear(7, args.hidden_dim)
         self.node_embedding = nn.Embedding(args.num_nodes, args.hidden_dim)
         self.input_embedding = nn.Sequential(nn.Linear(args.in_dim, args.hidden_dim), nn.ReLU())
@@ -97,8 +94,6 @@ class MainModel(nn.Module):
             nn.ReLU()
         )
 
-        self.attention_fusion = SelfAttentionLayer(args.hidden_dim, len(self.multi_scale_STGCN))
-
     def forward(self, x):
         x = self.backbone(x)
         global_features = []
@@ -111,10 +106,6 @@ class MainModel(nn.Module):
             global_features.append(global_feature)
         local_feature = self.local_fusion_layer(torch.cat(local_features, dim=-1))
         global_feature = self.global_fusion_layer(torch.cat(global_features, dim=-1))
-
-        fused_local = self.attention_fusion(local_features)    # [B, N, D]
-        fused_global = self.attention_fusion(global_features)
-
         feature = torch.cat([local_feature, global_feature], dim=-1)
         return feature
 
@@ -122,36 +113,16 @@ class MainModel(nn.Module):
 class STBackbone(nn.Module):
     def __init__(self, args, num_layers):
         super(STBackbone, self).__init__()
-        self.cells = nn.ModuleList([
-            nn.Sequential(*[
-                PDG2SeqCell(
-                    node_num=args.num_nodes,
-                    dim_in=args.hidden_dim,
-                    dim_out=args.hidden_dim,
-                    cheb_k=args.cheb_k,
-                    embed_dim=args.embed_dim,
-                    time_dim=args.hidden_dim
-                ) for _ in range(num_layers)
-            ]) for _ in range(2)
-        ])
+        self.layers = nn.ModuleList([
+            nn.Sequential(*[GNNLayer(args, args.predefined_adjs[i],
+                                     use_learned_adj=False, padding=2) for j in range(num_layers)]) for i in range(2)])
 
     def forward(self, feature):
-        # feature: [B, T, N, D]
         feature_list = []
-        B, T, N, D = feature.shape
-        # Khởi tạo state và node_embeddings
-        state = torch.zeros(B, N, D).to(feature.device)
-        node_embeddings = (
-            torch.randn(B, N, D).to(feature.device),
-            torch.randn(B, N, D).to(feature.device),
-            torch.randn(B, N, D).to(feature.device)
-        )
-        for cell_seq in self.cells:
-            x = feature
-            for cell in cell_seq:
-                x = cell(x, state, node_embeddings)  # x: [B, T, N, D]
+        for layer in self.layers:
+            x = layer(feature)
             feature_list.append(x)
-        feature = torch.stack(feature_list, dim=3).max(dim=3)[0]  # [B, T, N, D]
+        feature = torch.stack(feature_list, dim=3).max(dim=3)[0]  # B x T x N x D
         return feature
 
 
@@ -270,23 +241,3 @@ class TemporalPooling(nn.Module):
         else:
             y = x.mean(dim=2)
         return y
-    
-class SelfAttentionLayer(nn.Module):
-    def __init__(self, input_dim, num_scales):
-        super(SelfAttentionLayer, self).__init__()
-        self.query_weight = nn.Linear(input_dim, input_dim)
-        self.key_weight = nn.Linear(input_dim, input_dim)
-        self.value_weight = nn.Linear(input_dim, input_dim)
-        self.num_scales = num_scales
-
-    def forward(self, x):
-        # x: [B, num_scales, N, D]
-        B, S, N, D = x.shape
-        x_flat = x.permute(0, 2, 1, 3).reshape(B * N, S, D)  # [B*N, S, D]
-        q = self.query_weight(x_flat)
-        k = self.key_weight(x_flat)
-        v = self.value_weight(x_flat)
-        attn_scores = F.softmax(torch.matmul(q, k.transpose(1, 2)) / (D ** 0.5), dim=-1)  # [B*N, S, S]
-        attended = torch.matmul(attn_scores, v)  # [B*N, S, D]
-        attended = attended.mean(dim=1).reshape(B, N, D)  # [B, N, D]
-        return attended

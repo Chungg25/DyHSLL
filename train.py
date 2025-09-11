@@ -26,13 +26,13 @@ parser.add_argument('--adj_data', type=str, default=False)
 
 
 # model params
-parser.add_argument('--hidden_dim', type=int, default=64)
-parser.add_argument('--num_backbone_layers', type=int, default=7)
+parser.add_argument('--hidden_dim', type=int, default=16)
+parser.add_argument('--num_backbone_layers', type=int, default=6)
 parser.add_argument('--num_paths', type=int, default=2)
 parser.add_argument('--dropout', type=float, default=0)
 parser.add_argument('--winsize', type=int, default=2)
 parser.add_argument('--num_head_layers', type=int, default=2)
-parser.add_argument('--num_hyper_edge', type=int, default=64)
+parser.add_argument('--num_hyper_edge', type=int, default=16)
 parser.add_argument('--use_multi_scale', type=str_to_bool, default=True)
 parser.add_argument('--use_hyper_graph', type=str_to_bool, default=True)
 parser.add_argument('--use_interactive', type=str_to_bool, default=True)
@@ -52,6 +52,8 @@ parser.add_argument('--learning_rate', type=float, default=0.001, help='learning
 parser.add_argument('--weight_decay', type=float, default=0.0001, help='weight decay rate')
 parser.add_argument('--clip', type=int, default=5, help='clip')
 parser.add_argument('--epochs', type=int, default=300, help='')
+parser.add_argument('--cheb_k', type=int, default=1, help='clip')
+parser.add_argument('--embed_dim', type=int, default=16, help='')
 
 # logging params
 parser.add_argument('--print_every', type=int, default=1, help='')
