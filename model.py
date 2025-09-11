@@ -143,30 +143,28 @@ class FullModel(nn.Module):
     def forward(self, data):
         feat = data['feat']  # B x T x N x Din
 
-        feat_in = feat[..., 0]  # B x T x N
-        feat_out = feat[..., 1] # B x T x N
-
-        # Xử lý embedding riêng cho in và out
-        input_emb_in = self.input_embedding(feat_in.unsqueeze(-1))  # B x T x N x hidden_dim
-        input_emb_out = self.input_embedding(feat_out.unsqueeze(-1))  # B x T x N x hidden_dim
-
+        input_emb = self.input_embedding(feat)
 
         tod_idx = data['tod_idx']  # B x T
         dow_onehot = data['dow_onehot']  # B x T x 7
         node_idx = torch.arange(0, self.args.num_nodes).to(feat.device)  # N
-        input_emb = self.input_embedding(feat)
+        # input_emb = self.input_embedding(feat)
         time_emb = self.time_embedding(tod_idx).unsqueeze(2)
         date_emb = self.date_embedding(dow_onehot).unsqueeze(2)  # B x T x 1 x D
         node_emb = self.node_embedding(node_idx).unsqueeze(0).unsqueeze(0)
 
-        feature_in = input_emb_in + time_emb + date_emb + node_emb  # B x T x N x hidden_dim
-        feature_out = input_emb_out + time_emb + date_emb + node_emb  # B x T x N x D
+        # feature_in = input_emb_in + time_emb + date_emb + node_emb  # B x T x N x hidden_dim
+        # feature_out = input_emb_out + time_emb + date_emb + node_emb  # B x T x N x D
+        feature = input_emb + time_emb + date_emb + node_emb
 
-        # out_feat = self.main_model(feature)  # B x N x nD
+        feature_in = feature[..., 0].unsqueeze(-1)   # B x T x N x 1
+        feature_out = feature[..., 1].unsqueeze(-1)  # B x T x N x 1
 
-        out_feat_in = self.main_model(feature_in)   # B x N x nD
-        out_feat_out = self.main_model(feature_out)
+        # Xử lý riêng biệt
+        out_feat_in = self.main_model(feature_in)    # B x N x nD
+        out_feat_out = self.main_model(feature_out)  # B x N x nD
 
+        # Tổng hợp lại
         out_feat = torch.cat([out_feat_in, out_feat_out], dim=-1)
 
         future_feature = data['target'][:, :, :, -5:].transpose(1, 2).reshape(self.args.batch_size, self.args.num_nodes, -1)
