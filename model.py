@@ -1,10 +1,8 @@
 import math
-
 import torch
 import torch.nn as nn
 from util import norm_adj
 from backbone import GNNLayer
-
 
 class FullModel(nn.Module):
     def __init__(self, args):
@@ -13,6 +11,7 @@ class FullModel(nn.Module):
         self.time_embedding = nn.Embedding(48, args.hidden_dim)
         self.date_embedding = nn.Linear(7, args.hidden_dim)
         self.node_embedding = nn.Embedding(args.num_nodes, args.hidden_dim)
+        # Embedding riêng cho in và out
         self.input_embedding_in = nn.Sequential(nn.Linear(1, args.hidden_dim), nn.ReLU())
         self.input_embedding_out = nn.Sequential(nn.Linear(1, args.hidden_dim), nn.ReLU())
         self.main_model = MainModel(args, adj=args.predefined_adj)
@@ -46,15 +45,19 @@ class FullModel(nn.Module):
 
         out_feat = torch.cat([out_feat_in, out_feat_out], dim=-1)  # B x N x (2*nD)
 
-        future_feature = data['target'][:, :, :, -5:].transpose(1, 2).reshape(self.args.batch_size, self.args.num_nodes, -1)
+        # future_feature: [B, T, N, 5], lấy 5 bước cuối cùng
+        future_feature = data['target'][:, :, :, -5:]  # B x T x N x 5
+        # Đưa về [B, N, 5*12] (12 là seq_out_len)
+        future_feature = future_feature.transpose(1, 2).reshape(self.args.batch_size, self.args.num_nodes, -1)
         if self.args.feat_off == 1:
             future_feature = self.args.scaler.transform(future_feature)
         else:
             future_feature = self.args.scaler[0].transform(future_feature)
-        prediction = self.pred_head(torch.cat([out_feat, future_feature], dim=-1))  # B x N x T
-        prediction = prediction.transpose(1, 2).unsqueeze(-1)  # B x T x N x 1
-        return prediction
 
+        fusion = torch.cat([out_feat, future_feature], dim=-1)  # [B, N, main_output_dim + 5*12]
+        prediction = self.pred_head(fusion)  # [B, N, seq_out_len]
+        prediction = prediction.transpose(1, 2).unsqueeze(-1)  # [B, seq_out_len, N, 1]
+        return prediction
 
 class MainModel(nn.Module):
     def __init__(self, args, adj=None):
@@ -120,7 +123,6 @@ class MainModel(nn.Module):
         feature = torch.cat([local_feature, global_feature], dim=-1)
         return feature
 
-
 class STBackbone(nn.Module):
     def __init__(self, args, num_layers):
         super(STBackbone, self).__init__()
@@ -135,7 +137,6 @@ class STBackbone(nn.Module):
             feature_list.append(x)
         feature = torch.stack(feature_list, dim=3).max(dim=3)[0]  # B x T x N x D
         return feature
-
 
 class STGCNWithHypergraphLearning(nn.Module):
     def __init__(self, args, adj=None, depth=3, num_edges=32, hyper=None):
@@ -163,7 +164,6 @@ class STGCNWithHypergraphLearning(nn.Module):
             if i != self.depth - 1:
                 x = self.dropout(x)
         return x
-
 
 class SpatialTemporalInteractiveGCN(nn.Module):
     def __init__(self, args, adj=None, window_size=2):
@@ -198,7 +198,6 @@ class SpatialTemporalInteractiveGCN(nn.Module):
         y_final = self.norm(next_feat + x)
         return y_final
 
-
 class HypergraphLearning(nn.Module):
     def __init__(self, args, num_edges):
         super(HypergraphLearning, self).__init__()
@@ -222,7 +221,6 @@ class HypergraphLearning(nn.Module):
         y_final = self.norm(y + x)
         return y_final
 
-
 class GSL(nn.Module):
     def __init__(self, args, temporal_length):
         super(GSL, self).__init__()
@@ -237,7 +235,6 @@ class GSL(nn.Module):
         y = feat.reshape(x.size(0), x.size(1), x.size(2), x.size(3))
         y_final = self.norm(y + x)
         return y_final
-
 
 class TemporalPooling(nn.Module):
     def __init__(self, mode='mean', ratio=2):
