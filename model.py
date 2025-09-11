@@ -10,10 +10,11 @@ class FullModel(nn.Module):
     def __init__(self, args):
         super(FullModel, self).__init__()
         self.args = args
-        self.time_embedding = nn.Embedding(288, args.hidden_dim)
+        self.time_embedding = nn.Embedding(48, args.hidden_dim)
         self.date_embedding = nn.Linear(7, args.hidden_dim)
         self.node_embedding = nn.Embedding(args.num_nodes, args.hidden_dim)
-        self.input_embedding = nn.Sequential(nn.Linear(args.in_dim, args.hidden_dim), nn.ReLU())
+        self.input_embedding_in = nn.Sequential(nn.Linear(1, args.hidden_dim), nn.ReLU())
+        self.input_embedding_out = nn.Sequential(nn.Linear(1, args.hidden_dim), nn.ReLU())
         self.main_model = MainModel(args, adj=args.predefined_adj)
         self.pred_head = nn.Sequential(
             nn.Linear(args.main_output_dim + 5 * 12, args.hidden_dim),
@@ -27,8 +28,8 @@ class FullModel(nn.Module):
         feat_in = feat[..., 0].unsqueeze(-1)   # B x T x N x 1
         feat_out = feat[..., 1].unsqueeze(-1)  # B x T x N x 1
 
-        input_emb_in = self.input_embedding(feat_in)   # B x T x N x hidden_dim
-        input_emb_out = self.input_embedding(feat_out) # B x T x N x hidden_dim
+        input_emb_in = self.input_embedding_in(feat_in)   # B x T x N x hidden_dim
+        input_emb_out = self.input_embedding_out(feat_out) # B x T x N x hidden_dim
 
         tod_idx = data['tod_idx']  # B x T
         dow_onehot = data['dow_onehot']  # B x T x 7
