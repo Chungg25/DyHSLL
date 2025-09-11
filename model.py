@@ -157,8 +157,10 @@ class FullModel(nn.Module):
         # feature_out = input_emb_out + time_emb + date_emb + node_emb  # B x T x N x D
         feature = input_emb + time_emb + date_emb + node_emb
 
-        feature_in = feature[..., 0].unsqueeze(-1)   # B x T x N x 1
-        feature_out = feature[..., 1].unsqueeze(-1)  # B x T x N x 1
+        hidden_dim = self.args.hidden_dim
+        assert hidden_dim % 2 == 0, "hidden_dim phải chia hết cho 2 để tách in/out"
+        feature_in = feature[..., :hidden_dim // 2]   # B x T x N x hidden_dim//2
+        feature_out = feature[..., hidden_dim // 2:]  # B x T x N x 1
 
         # Xử lý riêng biệt
         out_feat_in = self.main_model(feature_in)    # B x N x nD
