@@ -142,7 +142,11 @@ class FullModel(nn.Module):
 
     def forward(self, data):
         feat = data['feat']  # B x T x N x 2 (in, out)
-        input_emb = self.input_embedding(feat)  # B x T x N x hidden_dim
+        feat_in = feat[..., 0].unsqueeze(-1)   # B x T x N x 1
+        feat_out = feat[..., 1].unsqueeze(-1)  # B x T x N x 1
+
+        input_emb_in = self.input_embedding(feat_in)   # B x T x N x hidden_dim
+        input_emb_out = self.input_embedding(feat_out) # B x T x N x hidden_dim
 
         tod_idx = data['tod_idx']  # B x T
         dow_onehot = data['dow_onehot']  # B x T x 7
@@ -151,13 +155,8 @@ class FullModel(nn.Module):
         date_emb = self.date_embedding(dow_onehot).unsqueeze(2)
         node_emb = self.node_embedding(node_idx).unsqueeze(0).unsqueeze(0)
 
-        feature = input_emb + time_emb + date_emb + node_emb  # B x T x N x hidden_dim
-
-        # Nếu muốn xử lý riêng biệt in/out, tách ở đây:
-        hidden_dim = self.args.hidden_dim
-        assert hidden_dim % 2 == 0, "hidden_dim phải chia hết cho 2 để tách in/out"
-        feature_in = feature[..., :hidden_dim // 2]   # B x T x N x hidden_dim//2
-        feature_out = feature[..., hidden_dim // 2:]  # B x T x N x hidden_dim//2
+        feature_in = input_emb_in + time_emb + date_emb + node_emb  # B x T x N x hidden_dim
+        feature_out = input_emb_out + time_emb + date_emb + node_emb  # B x T x N x hidden_dim
 
         out_feat_in = self.main_model(feature_in)    # B x N x nD
         out_feat_out = self.main_model(feature_out)  # B x N x nD
