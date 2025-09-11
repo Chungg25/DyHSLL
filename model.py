@@ -2,9 +2,127 @@ import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.nn.parameter import Parameter
+from torch_geometric.nn import MessagePassing
+from torch_geometric.utils import degree, softmax
 from util import norm_adj
 from backbone import GNNLayer
 
+
+def glorot(tensor):
+    if tensor is not None:
+        stdv = math.sqrt(6.0 / (tensor.size(-2) + tensor.size(-1)))
+        tensor.data.uniform_(-stdv, stdv)
+
+def zeros(tensor):
+    if tensor is not None:
+        tensor.data.zero_()
+
+class HypergraphConv(MessagePassing):
+    def __init__(self,
+                 in_channels,
+                 out_channels,
+                 use_attention=True,
+                 heads=1,
+                 concat=True,
+                 negative_slope=0.2,
+                 dropout=0.1,
+                 bias=False):
+        super(HypergraphConv, self).__init__(aggr='add')
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.use_attention = use_attention
+
+        if self.use_attention:
+            self.heads = heads
+            self.concat = concat
+            self.negative_slope = negative_slope
+            self.dropout = dropout
+            self.weight = Parameter(torch.Tensor(in_channels, out_channels))
+            self.att = Parameter(torch.Tensor(1, heads, 2 * int(out_channels / heads)))
+        else:
+            self.heads = 1
+            self.concat = True
+            self.weight = Parameter(torch.Tensor(in_channels, out_channels))
+
+        if bias and concat:
+            self.bias = Parameter(torch.Tensor(heads * out_channels))
+        elif bias and not concat:
+            self.bias = Parameter(torch.Tensor(out_channels))
+        else:
+            self.register_parameter('bias', None)
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        glorot(self.weight)
+        if self.use_attention:
+            glorot(self.att)
+        zeros(self.bias)
+
+    def __forward__(self, x, hyperedge_index, alpha=None):
+        D = degree(hyperedge_index[0], x.size(0), x.dtype)
+        num_edges = 2 * (hyperedge_index[1].max().item() + 1)
+        B = 1.0 / degree(hyperedge_index[1], int(num_edges/2), x.dtype)
+        B[B == float("inf")] = 0
+
+        self.flow = 'source_to_target'
+        out = self.propagate(hyperedge_index, x=x, norm=B, alpha=alpha)
+        self.flow = 'target_to_source'
+        out = self.propagate(hyperedge_index, x=out, norm=D, alpha=alpha)
+        return out
+
+    def message(self, x_j, edge_index_i, norm, alpha):
+        out = norm[edge_index_i].view(-1, 1, 1) * x_j
+        if alpha is not None:
+            out = alpha.unsqueeze(-1) * out
+        return out
+
+    def forward(self, x, hyperedge_index):
+        # x: [N, in_channels]
+        x = torch.matmul(x, self.weight)
+        x_i = torch.index_select(x, dim=0, index=hyperedge_index[0])
+        edge_sums = {}
+        for edge_id, node_id in zip(hyperedge_index[1], hyperedge_index[0]):
+            edge_id = edge_id.item()
+            node_id = node_id.item()
+            if edge_id not in edge_sums:
+                edge_sums[edge_id] = x[node_id, :]
+            else:
+                edge_sums[edge_id] += x[node_id, :]
+        result_list = torch.stack([value for value in edge_sums.values()], dim=0)
+        x_j = torch.index_select(result_list, dim=0, index=hyperedge_index[1])
+        loss_hyper = 0
+        for k in range(len(edge_sums)):
+            for m in range(len(edge_sums)):
+                inner_product = torch.sum(edge_sums[k] * edge_sums[m], dim=0, keepdim=True)
+                norm_q_i = torch.norm(edge_sums[k], dim=0, keepdim=True)
+                norm_q_j = torch.norm(edge_sums[m], dim=0, keepdim=True)
+                alpha = inner_product / (norm_q_i * norm_q_j)
+                distan = torch.norm(edge_sums[k] - edge_sums[m], dim=0, keepdim=True)
+                loss_item = alpha * distan + (1 - alpha) * (torch.clamp(torch.tensor(4.2) - distan, min=0.0))
+                loss_hyper += torch.abs(torch.mean(loss_item))
+        loss_hyper = loss_hyper / ((len(edge_sums) + 1) ** 2)
+        alpha = (torch.cat([x_i, x_j], dim=-1) * self.att).sum(dim=-1)
+        alpha = F.leaky_relu(alpha, self.negative_slope)
+        alpha = softmax(alpha.squeeze(), hyperedge_index[0], num_nodes=x.size(0))
+        alpha = F.dropout(alpha, p=self.dropout, training=self.training)
+        D = degree(hyperedge_index[0], x.size(0), x.dtype)
+        num_edges = 2 * (hyperedge_index[1].max().item() + 1)
+        B = 1.0 / degree(hyperedge_index[1], int(num_edges/2), x.dtype)
+        B[B == float("inf")] = 0
+        self.flow = 'source_to_target'
+        out = self.propagate(hyperedge_index, x=x, norm=B, alpha=alpha)
+        self.flow = 'target_to_source'
+        out = self.propagate(hyperedge_index, x=out, norm=D, alpha=alpha)
+        constrain_loss = x_i - x_j
+        constrain_lossfin1 = torch.mean(constrain_loss)
+        constrain_losstotal = abs(constrain_lossfin1) + loss_hyper
+        return out, constrain_losstotal
+
+    def __repr__(self):
+        return "{}({}, {})".format(self.__class__.__name__, self.in_channels, self.out_channels)
 
 class FullModel(nn.Module):
     def __init__(self, args):
@@ -24,6 +142,15 @@ class FullModel(nn.Module):
 
     def forward(self, data):
         feat = data['feat']  # B x T x N x Din
+
+        feat_in = feat[..., 0]  # B x T x N
+        feat_out = feat[..., 1] # B x T x N
+
+        # Xử lý embedding riêng cho in và out
+        input_emb_in = self.input_embedding(feat_in.unsqueeze(-1))  # B x T x N x hidden_dim
+        input_emb_out = self.input_embedding(feat_out.unsqueeze(-1))  # B x T x N x hidden_dim
+
+
         tod_idx = data['tod_idx']  # B x T
         dow_onehot = data['dow_onehot']  # B x T x 7
         node_idx = torch.arange(0, self.args.num_nodes).to(feat.device)  # N
@@ -31,9 +158,16 @@ class FullModel(nn.Module):
         time_emb = self.time_embedding(tod_idx).unsqueeze(2)
         date_emb = self.date_embedding(dow_onehot).unsqueeze(2)  # B x T x 1 x D
         node_emb = self.node_embedding(node_idx).unsqueeze(0).unsqueeze(0)
-        feature = input_emb + time_emb + date_emb + node_emb  # B x T x N x D
 
-        out_feat = self.main_model(feature)  # B x N x nD
+        feature_in = input_emb_in + time_emb + date_emb + node_emb  # B x T x N x hidden_dim
+        feature_out = input_emb_out + time_emb + date_emb + node_emb  # B x T x N x D
+
+        # out_feat = self.main_model(feature)  # B x N x nD
+
+        out_feat_in = self.main_model(feature_in)   # B x N x nD
+        out_feat_out = self.main_model(feature_out)
+
+        out_feat = torch.cat([out_feat_in, out_feat_out], dim=-1)
 
         future_feature = data['target'][:, :, :, -5:].transpose(1, 2).reshape(self.args.batch_size, self.args.num_nodes, -1)
         if self.args.feat_off == 1:
@@ -193,24 +327,36 @@ class HypergraphLearning(nn.Module):
         super(HypergraphLearning, self).__init__()
         self.args = args
         self.num_edges = num_edges
-        self.edge_clf = torch.randn(args.hidden_dim, self.num_edges) / math.sqrt(self.num_edges)
-        self.edge_clf = nn.Parameter(self.edge_clf, requires_grad=True)
-        self.edge_map = torch.randn(self.num_edges, self.num_edges) / math.sqrt(self.num_edges)
-        self.edge_map = nn.Parameter(self.edge_map, requires_grad=True)
         self.activation = nn.ReLU()
         self.norm = nn.LayerNorm(args.hidden_dim)
+        self.hypergraph_conv = HypergraphConv(
+            in_channels=args.hidden_dim,
+            out_channels=args.hidden_dim,
+            use_attention=True,
+            heads=1,
+            concat=True,
+            negative_slope=0.2,
+            dropout=0.1,
+            bias=False
+        )
 
-    def forward(self, x):  # B x T x N x D
-        feat = x.reshape(x.size(0), -1, x.size(3))
-        hyper_assignment = torch.softmax(feat @ self.edge_clf, dim=-1)
-        hyper_feat = hyper_assignment.transpose(1, 2) @ feat
-        hyper_feat_mapped = self.activation(self.edge_map @ hyper_feat)
-        hyper_out = hyper_feat_mapped + hyper_feat
-        y = self.activation(hyper_assignment @ hyper_out)
-        y = y.reshape(x.size(0), x.size(1), x.size(2), x.size(3))
-        y_final = self.norm(y + x)
+    def forward(self, x):  # x: [B, T, N, D]
+        B, T, N, D = x.shape
+        out_list = []
+        for b in range(B):
+            batch_out = []
+            for t in range(T):
+                # x[b, t]: [N, D]
+                # Bạn cần truyền hyperedge_index phù hợp, ví dụ lấy từ self.args.hyperedge_index
+                # mask = self.args.hyperedge_index.to(x.device)  # [2, num_edges]
+                mask = self.args.hyperedge_index.to(x.device)
+                out, _ = self.hypergraph_conv(x[b, t], mask)
+                batch_out.append(out.unsqueeze(0))  # [1, N, D]
+            batch_out = torch.cat(batch_out, dim=0)  # [T, N, D]
+            out_list.append(batch_out.unsqueeze(0))  # [1, T, N, D]
+        out_tensor = torch.cat(out_list, dim=0)  # [B, T, N, D]
+        y_final = self.norm(out_tensor + x)
         return y_final
-
 
 class GSL(nn.Module):
     def __init__(self, args, temporal_length):
