@@ -52,7 +52,7 @@ class MainModel(nn.Module):
         self.adj = args.predefined_adj if adj is None else adj  # N x N
         args.main_output_dim = args.hidden_dim * 2
         self.backbone = STBackbone(args, args.num_backbone_layers)
-        self.temporal_transformer = TemporalTransformer(args.hidden_dim)
+        self.temporal_transformer = TemporalTransformer(args.hidden_dim * args.num_nodes)
         self.hyper = HypergraphLearning(args, self.args.num_hyper_edge)
         if self.args.use_multi_scale:
             self.multi_scale_STGCN = nn.ModuleList([
