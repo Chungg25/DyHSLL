@@ -52,6 +52,7 @@ class MainModel(nn.Module):
         self.adj = args.predefined_adj if adj is None else adj  # N x N
         args.main_output_dim = args.hidden_dim * 2
         self.backbone = STBackbone(args, args.num_backbone_layers)
+        self.temporal_transformer = TemporalTransformer(args.hidden_dim)
         self.hyper = HypergraphLearning(args, self.args.num_hyper_edge)
         if self.args.use_multi_scale:
             self.multi_scale_STGCN = nn.ModuleList([
@@ -96,6 +97,7 @@ class MainModel(nn.Module):
 
     def forward(self, x):
         x = self.backbone(x)
+        x = self.temporal_transformer(x)
         global_features = []
         local_features = []
         for i, path in enumerate(self.multi_scale_STGCN):
@@ -241,3 +243,16 @@ class TemporalPooling(nn.Module):
         else:
             y = x.mean(dim=2)
         return y
+
+class TemporalTransformer(nn.Module):
+    def __init__(self, d_model, nhead=4, num_layers=2):
+        super().__init__()
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, batch_first=True)
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+    def forward(self, x):  # x: B x T x N x D
+        B, T, N, D = x.shape
+        x = x.reshape(B, T, N*D)       # gộp node và feature
+        out = self.encoder(x)          # B x T x (N*D)
+        out = out.reshape(B, T, N, D)  # reshape lại
+        return out
