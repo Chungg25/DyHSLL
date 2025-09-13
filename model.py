@@ -56,23 +56,17 @@ class MainModel(nn.Module):
         self.hyper = HypergraphLearning(args, self.args.num_hyper_edge)
         if self.args.use_multi_scale:
             self.multi_scale_STGCN = nn.ModuleList([
-                nn.Sequential(STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
-                                                          hyper=self.hyper if not args.GSL else GSL(args, 12))),
-                nn.Sequential(TemporalPooling(mode='mean', ratio=2),
-                              STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
-                                                          hyper=self.hyper if not args.GSL else GSL(args, 6))),
-                # nn.Sequential(TemporalPooling(mode='mean', ratio=3),
-                #               STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
-                #                                           hyper=self.hyper if not args.GSL else GSL(args, 4))),
-                # nn.Sequential(TemporalPooling(mode='mean', ratio=4),
-                #               STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
-                #                                           hyper=self.hyper if not args.GSL else GSL(args, 3))),
-                nn.Sequential(TemporalPooling(mode='mean', ratio=6),
-                              STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
-                                                          hyper=self.hyper if not args.GSL else GSL(args, 2))),
-                nn.Sequential(TemporalPooling(mode='mean', ratio=12),
-                              STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
-                                                          hyper=self.hyper if not args.GSL else GSL(args, 1)))
+                nn.Sequential(
+                    TemporalTransformer(args.hidden_dim * args.num_nodes, nhead=4, num_layers=2),
+                    STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
+                                                hyper=self.hyper if not args.GSL else GSL(args, 12))
+                ),
+                nn.Sequential(
+                    TemporalTransformer(args.hidden_dim * args.num_nodes, nhead=4, num_layers=2),
+                    STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
+                                                hyper=self.hyper if not args.GSL else GSL(args, 6))
+                ),
+                # Có thể thêm nhiều nhánh với cấu hình khác nhau nếu muốn
             ])
         elif args.biscale:
             self.multi_scale_STGCN = nn.ModuleList([
