@@ -85,7 +85,7 @@ class FullModel(nn.Module):
         node_emb = self.node_embedding(node_idx).unsqueeze(0).unsqueeze(0)
         feature = input_emb + time_emb + date_emb + node_emb  # B x T x N x D
 
-        out_feat = self.main_model(feature)  # B x N x nD
+        out_feat, fusion_weights = self.main_model(feature)  # B x N x nD
 
         future_feature = data['target'][:, :, :, -5:].transpose(1, 2).reshape(self.args.batch_size, self.args.num_nodes, -1)
         if self.args.feat_off == 1:
