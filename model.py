@@ -125,7 +125,7 @@ class MainModel(nn.Module):
         self.feature_adj = args.feature_adj
         self.geo_adj = args.predefined_adj if adj is None else adj  # N x N
         args.main_output_dim = args.hidden_dim * 2
-        # self.backbone = STBackbone(args, args.num_backbone_layers)
+        self.backbone = STBackbone(args, args.num_backbone_layers)
 
         self.hyper_geo = HypergraphLearning(args, args.num_hyper_edge)
         self.hyper_feat = HypergraphLearning(args, args.num_hyper_edge)
