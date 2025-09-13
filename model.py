@@ -1,22 +1,18 @@
 import math
-
 import torch
 import torch.nn as nn
 from util import norm_adj
 from backbone import GNNLayer
 
-
 class TimeSeriesEmbedding(nn.Module):
     def __init__(self, in_dim, df):
         super().__init__()
         self.fc_tod = nn.Linear(1, df)
-        self.fc_dow = nn.Linear(7, df)  # Sửa ở đây: nhận one-hot
+        self.fc_dow = nn.Linear(7, df)  # nhận one-hot
         self.fc_feat = nn.Linear(in_dim, in_dim)
 
     def forward(self, x, tod, dow_onehot):
         # x: B x T x N x F
-        # tod: B x T (giá trị 1-288)
-        # dow_onehot: B x T x 7 (one-hot)
         B, T, N, F = x.shape
         tod = tod.float().unsqueeze(-1)  # B x T x 1
         dow = dow_onehot.float()         # B x T x 7
@@ -29,9 +25,6 @@ class TimeSeriesEmbedding(nn.Module):
         return out
 
 class TemporalSelfAttention(nn.Module):
-    """
-    Temporal self-attention cho từng node trên chuỗi thời gian.
-    """
     def __init__(self, in_dim):
         super().__init__()
         self.WQ = nn.Linear(in_dim, in_dim)
@@ -41,15 +34,14 @@ class TemporalSelfAttention(nn.Module):
     def forward(self, x):
         # x: B x T x N x D
         B, T, N, D = x.shape
-        # chuyển về (B*N, T, D) để attention trên T cho từng node
         x = x.permute(0, 2, 1, 3).reshape(B*N, T, D)
-        Q = self.WQ(x)  # (B*N, T, D)
+        Q = self.WQ(x)
         K = self.WK(x)
         V = self.WV(x)
-        attn_score = torch.matmul(Q, K.transpose(-2, -1)) / (D ** 0.5)  # (B*N, T, T)
+        attn_score = torch.matmul(Q, K.transpose(-2, -1)) / (D ** 0.5)
         attn_score = torch.softmax(attn_score, dim=-1)
-        out = torch.matmul(attn_score, V)  # (B*N, T, D)
-        out = out.reshape(B, N, T, D).permute(0, 2, 1, 3)  # B x T x N x D
+        out = torch.matmul(attn_score, V)
+        out = out.reshape(B, N, T, D).permute(0, 2, 1, 3)
         return out
 
 class LocalSelfAttention(nn.Module):
@@ -65,7 +57,7 @@ class LocalSelfAttention(nn.Module):
         # x: B x T x N x D
         B, T, N, D = x.shape
         pad = self.window_size // 2
-        x_padded = torch.cat([x[:, :pad], x, x[:, -pad:]], dim=1)  # pad temporal
+        x_padded = torch.cat([x[:, :pad], x, x[:, -pad:]], dim=1)
         out = []
         for t in range(T):
             win = x_padded[:, t:t+self.window_size]  # B x window x N x D
@@ -86,11 +78,12 @@ class FullModel(nn.Module):
         super(FullModel, self).__init__()
         self.args = args
         self.time_series_embedding = TimeSeriesEmbedding(args.in_dim, args.embed_dim)
-        self.temporal_attention = TemporalSelfAttention(args.hidden_dim + 2 * args.embed_dim)
+        self.temporal_proj = nn.Linear(args.in_dim + 2 * args.embed_dim, args.hidden_dim)
+        self.temporal_attention = TemporalSelfAttention(args.hidden_dim)
+        self.input_embedding = nn.Sequential(nn.Linear(args.in_dim, args.hidden_dim), nn.ReLU())
         self.time_embedding = nn.Embedding(288, args.hidden_dim)
         self.date_embedding = nn.Linear(7, args.hidden_dim)
         self.node_embedding = nn.Embedding(args.num_nodes, args.hidden_dim)
-        self.input_embedding = nn.Sequential(nn.Linear(args.in_dim, args.hidden_dim), nn.ReLU())
         self.main_model = MainModel(args, adj=args.predefined_adj)
         self.pred_head = nn.Sequential(
             nn.Linear(args.main_output_dim + 5 * 12, args.hidden_dim),
@@ -103,12 +96,14 @@ class FullModel(nn.Module):
         feat = data['feat']  # B x T x N x Din
         tod_idx = data['tod_idx']  # B x T
         dow_onehot = data['dow_onehot']  # B x T x 7
-        feature = self.time_series_embedding(feat, tod_idx, dow_onehot)
-        feature = self.temporal_attention(feature)
+        feature = self.time_series_embedding(feat, tod_idx, dow_onehot)  # B x T x N x (F + 2*df)
+        feature = self.temporal_proj(feature)  # B x T x N x hidden_dim
+        feature = self.temporal_attention(feature)  # B x T x N x hidden_dim
+
         node_idx = torch.arange(0, self.args.num_nodes).to(feat.device)  # N
         input_emb = self.input_embedding(feat)
         time_emb = self.time_embedding(tod_idx).unsqueeze(2)
-        date_emb = self.date_embedding(dow_onehot).unsqueeze(2)  # B x T x 1 x D
+        date_emb = self.date_embedding(dow_onehot).unsqueeze(2)
         node_emb = self.node_embedding(node_idx).unsqueeze(0).unsqueeze(0)
         feature = input_emb + time_emb + date_emb + node_emb  # B x T x N x D
 
@@ -123,12 +118,11 @@ class FullModel(nn.Module):
         prediction = prediction.transpose(1, 2).unsqueeze(-1)  # B x T x N x 1
         return prediction
 
-
 class MainModel(nn.Module):
     def __init__(self, args, adj=None):
         super(MainModel, self).__init__()
         self.args = args
-        self.adj = args.predefined_adj if adj is None else adj  # N x N
+        self.adj = args.predefined_adj if adj is None else adj
         args.main_output_dim = args.hidden_dim * 2
         self.backbone = STBackbone(args, args.num_backbone_layers)
         self.hyper = HypergraphLearning(args, self.args.num_hyper_edge)
@@ -188,7 +182,6 @@ class MainModel(nn.Module):
         feature = torch.cat([local_feature, global_feature], dim=-1)
         return feature
 
-
 class STBackbone(nn.Module):
     def __init__(self, args, num_layers):
         super(STBackbone, self).__init__()
@@ -204,13 +197,12 @@ class STBackbone(nn.Module):
         feature = torch.stack(feature_list, dim=3).max(dim=3)[0]  # B x T x N x D
         return feature
 
-
 class STGCNWithHypergraphLearning(nn.Module):
     def __init__(self, args, adj=None, depth=3, num_edges=32, hyper=None):
         super(STGCNWithHypergraphLearning, self).__init__()
         self.args = args
         self.depth = depth
-        self.adj = args.predefined_adj if adj is None else adj  # N x N
+        self.adj = args.predefined_adj if adj is None else adj
         self.stgcns = nn.ModuleList([SpatialTemporalInteractiveGCN(args, self.adj, window_size=args.winsize)
                                      for _ in range(depth)])
         self.hypers = HypergraphLearning(args, num_edges) if hyper is None else hyper
@@ -231,7 +223,6 @@ class STGCNWithHypergraphLearning(nn.Module):
             if i != self.depth - 1:
                 x = self.dropout(x)
         return x
-
 
 class SpatialTemporalInteractiveGCN(nn.Module):
     def __init__(self, args, adj=None, window_size=2):
@@ -266,7 +257,6 @@ class SpatialTemporalInteractiveGCN(nn.Module):
         y_final = self.norm(next_feat + x)
         return y_final
 
-
 class HypergraphLearning(nn.Module):
     def __init__(self, args, num_edges):
         super(HypergraphLearning, self).__init__()
@@ -290,7 +280,6 @@ class HypergraphLearning(nn.Module):
         y_final = self.norm(y + x)
         return y_final
 
-
 class GSL(nn.Module):
     def __init__(self, args, temporal_length):
         super(GSL, self).__init__()
@@ -305,7 +294,6 @@ class GSL(nn.Module):
         y = feat.reshape(x.size(0), x.size(1), x.size(2), x.size(3))
         y_final = self.norm(y + x)
         return y_final
-
 
 class TemporalPooling(nn.Module):
     def __init__(self, mode='mean', ratio=2):
