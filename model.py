@@ -52,6 +52,35 @@ class TemporalSelfAttention(nn.Module):
         out = out.reshape(B, N, T, D).permute(0, 2, 1, 3)  # B x T x N x D
         return out
 
+class LocalSelfAttention(nn.Module):
+    def __init__(self, in_dim, window_size=4):
+        super().__init__()
+        self.in_dim = in_dim
+        self.window_size = window_size
+        self.WQ = nn.Linear(in_dim, in_dim)
+        self.WK = nn.Linear(in_dim, in_dim)
+        self.WV = nn.Linear(in_dim, in_dim)
+
+    def forward(self, x):
+        # x: B x T x N x D
+        B, T, N, D = x.shape
+        pad = self.window_size // 2
+        x_padded = torch.cat([x[:, :pad], x, x[:, -pad:]], dim=1)  # pad temporal
+        out = []
+        for t in range(T):
+            win = x_padded[:, t:t+self.window_size]  # B x window x N x D
+            win = win.permute(0, 2, 1, 3).reshape(B*N, self.window_size, D)
+            Q = self.WQ(win[:, pad:pad+1])  # B*N x 1 x D
+            K = self.WK(win)
+            V = self.WV(win)
+            attn = torch.matmul(Q, K.transpose(-2, -1)) / (D ** 0.5)
+            attn = torch.softmax(attn, dim=-1)
+            val = torch.matmul(attn, V)  # B*N x 1 x D
+            val = val.reshape(B, N, D)
+            out.append(val)
+        out = torch.stack(out, dim=1)  # B x T x N x D
+        return out
+
 class FullModel(nn.Module):
     def __init__(self, args):
         super(FullModel, self).__init__()
@@ -107,19 +136,19 @@ class MainModel(nn.Module):
             self.multi_scale_STGCN = nn.ModuleList([
                 nn.Sequential(STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
                                                           hyper=self.hyper if not args.GSL else GSL(args, 12))),
-                nn.Sequential(TemporalPooling(mode='mean', ratio=2),
+                nn.Sequential(LocalSelfAttention(args.hidden_dim, window_size=6),
                               STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
                                                           hyper=self.hyper if not args.GSL else GSL(args, 6))),
-                nn.Sequential(TemporalPooling(mode='mean', ratio=3),
+                nn.Sequential(LocalSelfAttention(args.hidden_dim, window_size=4),
                               STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
                                                           hyper=self.hyper if not args.GSL else GSL(args, 4))),
-                nn.Sequential(TemporalPooling(mode='mean', ratio=4),
+                nn.Sequential(LocalSelfAttention(args.hidden_dim, window_size=3),
                               STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
                                                           hyper=self.hyper if not args.GSL else GSL(args, 3))),
-                nn.Sequential(TemporalPooling(mode='mean', ratio=6),
+                nn.Sequential(LocalSelfAttention(args.hidden_dim, window_size=2),
                               STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
                                                           hyper=self.hyper if not args.GSL else GSL(args, 2))),
-                nn.Sequential(TemporalPooling(mode='mean', ratio=12),
+                nn.Sequential(LocalSelfAttention(args.hidden_dim, window_size=1),
                               STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
                                                           hyper=self.hyper if not args.GSL else GSL(args, 1)))
             ])
