@@ -103,11 +103,15 @@ args.scaler = scaler
 args.device = device
 import pickle
 
-with open('NYC/adj_mx_taxi_2.pkl', 'rb') as f:
-  adj_mx = pickle.load(f)
-adj_mx = torch.tensor(adj_mx, dtype=torch.float32)
-args.adj_mx = adj_mx
-args.k_nearest = 4
+# with open('NYC/adj_mx_taxi_2.pkl', 'rb') as f:
+#   adj_mx = pickle.load(f)
+# adj_mx = torch.tensor(adj_mx, dtype=torch.float32)
+# args.adj_mx = adj_mx
+# args.k_nearest = 4
+
+feature_adj = preprocessing_for_metric()
+feature_adj = torch.tensor(feature_adj, dtype=torch.float32).to(device)
+args.feature_adj = feature_adj
 
 random.seed(args.seed)
 np.random.seed(args.seed)

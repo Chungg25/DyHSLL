@@ -5,6 +5,8 @@ import scipy.sparse as sp
 import torch
 from torch.autograd import Variable
 from sklearn.metrics import mean_squared_error, mean_absolute_error
+import h5py
+from scipy.spatial.distance import cdist
 
 def norm_adj(adj):
     print(adj.shape)
@@ -264,6 +266,53 @@ def load_sym_adj(args, pkl_filename):
 #         return sym_adj(dis_mat), dis_mat
 #     sensor_ids, sensor_id_to_ind, adj_mx = load_pickle(pkl_filename)
 #     return sym_adj(adj_mx), adj_mx
+
+def normalized_laplacian(w: np.ndarray) -> np.matrix:
+    d = np.array(w.sum(1))
+    d_inv_sqrt = np.power(d, -0.5).flatten()
+    d_inv_sqrt[np.isinf(d_inv_sqrt)] = 0.
+    print(d,d_inv_sqrt)
+    d_mat_inv_sqrt = np.eye(d_inv_sqrt.shape[0]) * d_inv_sqrt.shape
+    return np.identity(w.shape[0]) - d_mat_inv_sqrt.dot(w).dot(d_mat_inv_sqrt)
+
+def random_walk_matrix(w) -> np.matrix:
+    d = np.array(w.sum(1))
+    d_inv = np.power(d, -1).flatten()
+    d_inv[np.isinf(d_inv)] = 0.
+    d_mat_inv = np.eye(d_inv.shape[0]) * d_inv
+    return d_mat_inv.dot(w)
+
+
+
+def preprocessing_for_metric():
+    data = []
+
+    with h5py.File(f"NYC/NYC_Taxi.h5", 'r') as hf:
+        data_pick = hf[f'taxi_pick'][:]
+    with h5py.File(f"NYC/NYC_Taxi.h5", 'r') as hf:
+        data_drop = hf[f'taxi_drop'][:]
+    data.append(np.stack([data_pick, data_drop], axis=2))
+
+
+    data = np.concatenate(data, axis=1).transpose((0,2,1))
+    data = data[:-(672+672)]
+    T, input_dim, N = data.shape
+    inputs = data.reshape(-1, N)
+    u, s, v = np.linalg.svd(inputs)
+    w = np.diag(s[:20]).dot(v[:20,:]).T
+
+
+
+    graph = cdist(w, w, metric='euclidean')
+    support = graph * -1 / np.std(graph) ** 2
+    support = np.exp(support)
+
+    support = support - np.identity(support.shape[0])
+
+    support = random_walk_matrix(support)
+
+
+    return support
 
 
 def load_dataset(args, dataset_dir,
