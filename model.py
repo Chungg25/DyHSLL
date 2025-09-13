@@ -57,14 +57,24 @@ class MainModel(nn.Module):
         if self.args.use_multi_scale:
             self.multi_scale_STGCN = nn.ModuleList([
                 nn.Sequential(
-                    TemporalTransformer(args.hidden_dim * args.num_nodes, nhead=4, num_layers=2),
+                    TemporalMixing(args.hidden_dim * args.num_nodes),
                     STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
                                                 hyper=self.hyper if not args.GSL else GSL(args, 12))
                 ),
                 nn.Sequential(
-                    TemporalTransformer(args.hidden_dim * args.num_nodes, nhead=4, num_layers=2),
+                    TemporalMixing(args.hidden_dim * args.num_nodes),
                     STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
                                                 hyper=self.hyper if not args.GSL else GSL(args, 6))
+                ),
+                nn.Sequential(
+                    TemporalMixing(args.hidden_dim * args.num_nodes),
+                    STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
+                                                hyper=self.hyper if not args.GSL else GSL(args, 3))
+                ),
+                nn.Sequential(
+                    TemporalMixing(args.hidden_dim * args.num_nodes),
+                    STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
+                                                hyper=self.hyper if not args.GSL else GSL(args, 1))
                 ),
                 # Có thể thêm nhiều nhánh với cấu hình khác nhau nếu muốn
             ])
@@ -238,15 +248,29 @@ class TemporalPooling(nn.Module):
             y = x.mean(dim=2)
         return y
 
-class TemporalTransformer(nn.Module):
-    def __init__(self, d_model, nhead=4, num_layers=2):
+class TemporalMixing(nn.Module):
+    """
+    RWKV-style Temporal Mixing: dùng linear + gate + residual cho từng bước thời gian.
+    Giảm tham số so với Transformer, vẫn giữ khả năng trộn thông tin temporal.
+    """
+    def __init__(self, hidden_dim):
         super().__init__()
-        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, batch_first=True)
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.time_mix = nn.Parameter(torch.rand(hidden_dim))
+        self.key = nn.Linear(hidden_dim, hidden_dim)
+        self.value = nn.Linear(hidden_dim, hidden_dim)
+        self.gate = nn.Linear(hidden_dim, hidden_dim)
+        self.norm = nn.LayerNorm(hidden_dim)
 
-    def forward(self, x):  # x: B x T x N x D
+    def forward(self, x):
+        # x: B x T x N x D
         B, T, N, D = x.shape
-        x = x.reshape(B, T, N*D)       # gộp node và feature
-        out = self.encoder(x)          # B x T x (N*D)
-        out = out.reshape(B, T, N, D)  # reshape lại
+        x = x.reshape(B, T, N*D)  # RWKV thường dùng trên từng feature, ở đây gộp node và feature
+        # Trộn thông tin temporal bằng weighted sum (time_mix)
+        mix = x * self.time_mix
+        k = torch.tanh(self.key(mix))
+        v = self.value(mix)
+        g = torch.sigmoid(self.gate(mix))
+        out = g * v + (1 - g) * k
+        out = self.norm(out + x)
+        out = out.reshape(B, T, N, D)
         return out
