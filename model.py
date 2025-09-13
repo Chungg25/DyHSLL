@@ -6,10 +6,58 @@ from util import norm_adj
 from backbone import GNNLayer
 
 
+class TimeSeriesEmbedding(nn.Module):
+    def __init__(self, in_dim, df):
+        super().__init__()
+        self.fc_tod = nn.Linear(1, df)
+        self.fc_dow = nn.Linear(7, df)  # Sửa ở đây: nhận one-hot
+        self.fc_feat = nn.Linear(in_dim, in_dim)
+
+    def forward(self, x, tod, dow_onehot):
+        # x: B x T x N x F
+        # tod: B x T (giá trị 1-288)
+        # dow_onehot: B x T x 7 (one-hot)
+        B, T, N, F = x.shape
+        tod = tod.float().unsqueeze(-1)  # B x T x 1
+        dow = dow_onehot.float()         # B x T x 7
+        tod_emb = self.fc_tod(tod)       # B x T x df
+        dow_emb = self.fc_dow(dow)       # B x T x df
+        x_emb = self.fc_feat(x)          # B x T x N x F
+        tod_emb = tod_emb.unsqueeze(2).expand(-1, -1, N, -1)  # B x T x N x df
+        dow_emb = dow_emb.unsqueeze(2).expand(-1, -1, N, -1)  # B x T x N x df
+        out = torch.cat([x_emb, tod_emb, dow_emb], dim=-1)    # B x T x N x (F + 2*df)
+        return out
+
+class TemporalSelfAttention(nn.Module):
+    """
+    Temporal self-attention cho từng node trên chuỗi thời gian.
+    """
+    def __init__(self, in_dim):
+        super().__init__()
+        self.WQ = nn.Linear(in_dim, in_dim)
+        self.WK = nn.Linear(in_dim, in_dim)
+        self.WV = nn.Linear(in_dim, in_dim)
+
+    def forward(self, x):
+        # x: B x T x N x D
+        B, T, N, D = x.shape
+        # chuyển về (B*N, T, D) để attention trên T cho từng node
+        x = x.permute(0, 2, 1, 3).reshape(B*N, T, D)
+        Q = self.WQ(x)  # (B*N, T, D)
+        K = self.WK(x)
+        V = self.WV(x)
+        attn_score = torch.matmul(Q, K.transpose(-2, -1)) / (D ** 0.5)  # (B*N, T, T)
+        attn_score = torch.softmax(attn_score, dim=-1)
+        out = torch.matmul(attn_score, V)  # (B*N, T, D)
+        out = out.reshape(B, N, T, D).permute(0, 2, 1, 3)  # B x T x N x D
+        return out
+
 class FullModel(nn.Module):
     def __init__(self, args):
         super(FullModel, self).__init__()
         self.args = args
+        self.time_series_embedding = TimeSeriesEmbedding(args.in_dim, args.embed_dim)
+        self.temporal_attention = TemporalSelfAttention(args.hidden_dim + 2 * args.embed_dim)
         self.time_embedding = nn.Embedding(288, args.hidden_dim)
         self.date_embedding = nn.Linear(7, args.hidden_dim)
         self.node_embedding = nn.Embedding(args.num_nodes, args.hidden_dim)
@@ -26,6 +74,8 @@ class FullModel(nn.Module):
         feat = data['feat']  # B x T x N x Din
         tod_idx = data['tod_idx']  # B x T
         dow_onehot = data['dow_onehot']  # B x T x 7
+        feature = self.time_series_embedding(feat, tod_idx, dow_onehot)
+        feature = self.temporal_attention(feature)
         node_idx = torch.arange(0, self.args.num_nodes).to(feat.device)  # N
         input_emb = self.input_embedding(feat)
         time_emb = self.time_embedding(tod_idx).unsqueeze(2)
@@ -52,31 +102,26 @@ class MainModel(nn.Module):
         self.adj = args.predefined_adj if adj is None else adj  # N x N
         args.main_output_dim = args.hidden_dim * 2
         self.backbone = STBackbone(args, args.num_backbone_layers)
-        # self.temporal_transformer = TemporalTransformer(args.hidden_dim * args.num_nodes)
         self.hyper = HypergraphLearning(args, self.args.num_hyper_edge)
         if self.args.use_multi_scale:
             self.multi_scale_STGCN = nn.ModuleList([
-                nn.Sequential(
-                    TemporalMixing(args.hidden_dim * args.num_nodes),
-                    STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
-                                                hyper=self.hyper if not args.GSL else GSL(args, 12))
-                ),
-                nn.Sequential(
-                    TemporalMixing(args.hidden_dim * args.num_nodes),
-                    STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
-                                                hyper=self.hyper if not args.GSL else GSL(args, 6))
-                ),
-                nn.Sequential(
-                    TemporalMixing(args.hidden_dim * args.num_nodes),
-                    STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
-                                                hyper=self.hyper if not args.GSL else GSL(args, 3))
-                ),
-                nn.Sequential(
-                    TemporalMixing(args.hidden_dim * args.num_nodes),
-                    STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
-                                                hyper=self.hyper if not args.GSL else GSL(args, 1))
-                ),
-                # Có thể thêm nhiều nhánh với cấu hình khác nhau nếu muốn
+                nn.Sequential(STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
+                                                          hyper=self.hyper if not args.GSL else GSL(args, 12))),
+                nn.Sequential(TemporalPooling(mode='mean', ratio=2),
+                              STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
+                                                          hyper=self.hyper if not args.GSL else GSL(args, 6))),
+                nn.Sequential(TemporalPooling(mode='mean', ratio=3),
+                              STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
+                                                          hyper=self.hyper if not args.GSL else GSL(args, 4))),
+                nn.Sequential(TemporalPooling(mode='mean', ratio=4),
+                              STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
+                                                          hyper=self.hyper if not args.GSL else GSL(args, 3))),
+                nn.Sequential(TemporalPooling(mode='mean', ratio=6),
+                              STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
+                                                          hyper=self.hyper if not args.GSL else GSL(args, 2))),
+                nn.Sequential(TemporalPooling(mode='mean', ratio=12),
+                              STGCNWithHypergraphLearning(args, adj=self.adj, depth=args.num_head_layers,
+                                                          hyper=self.hyper if not args.GSL else GSL(args, 1)))
             ])
         elif args.biscale:
             self.multi_scale_STGCN = nn.ModuleList([
@@ -101,7 +146,6 @@ class MainModel(nn.Module):
 
     def forward(self, x):
         x = self.backbone(x)
-        # x = self.temporal_transformer(x)
         global_features = []
         local_features = []
         for i, path in enumerate(self.multi_scale_STGCN):
@@ -247,30 +291,3 @@ class TemporalPooling(nn.Module):
         else:
             y = x.mean(dim=2)
         return y
-
-class TemporalMixing(nn.Module):
-    """
-    RWKV-style Temporal Mixing: dùng linear + gate + residual cho từng bước thời gian.
-    Giảm tham số so với Transformer, vẫn giữ khả năng trộn thông tin temporal.
-    """
-    def __init__(self, hidden_dim):
-        super().__init__()
-        self.time_mix = nn.Parameter(torch.rand(hidden_dim))
-        self.key = nn.Linear(hidden_dim, hidden_dim)
-        self.value = nn.Linear(hidden_dim, hidden_dim)
-        self.gate = nn.Linear(hidden_dim, hidden_dim)
-        self.norm = nn.LayerNorm(hidden_dim)
-
-    def forward(self, x):
-        # x: B x T x N x D
-        B, T, N, D = x.shape
-        x = x.reshape(B, T, N*D)  # RWKV thường dùng trên từng feature, ở đây gộp node và feature
-        # Trộn thông tin temporal bằng weighted sum (time_mix)
-        mix = x * self.time_mix
-        k = torch.tanh(self.key(mix))
-        v = self.value(mix)
-        g = torch.sigmoid(self.gate(mix))
-        out = g * v + (1 - g) * k
-        out = self.norm(out + x)
-        out = out.reshape(B, T, N, D)
-        return out
