@@ -1,19 +1,19 @@
 import math
+
 import torch
 import torch.nn as nn
 from util import norm_adj
 from backbone import GNNLayer
 
+
 class FullModel(nn.Module):
     def __init__(self, args):
         super(FullModel, self).__init__()
         self.args = args
-        self.time_embedding = nn.Embedding(48, args.hidden_dim)
+        self.time_embedding = nn.Embedding(288, args.hidden_dim)
         self.date_embedding = nn.Linear(7, args.hidden_dim)
         self.node_embedding = nn.Embedding(args.num_nodes, args.hidden_dim)
-        # Embedding riêng cho in và out
-        self.input_embedding_in = nn.Sequential(nn.Linear(1, args.hidden_dim), nn.ReLU())
-        self.input_embedding_out = nn.Sequential(nn.Linear(1, args.hidden_dim), nn.ReLU())
+        self.input_embedding = nn.Sequential(nn.Linear(args.in_dim, args.hidden_dim), nn.ReLU())
         self.main_model = MainModel(args, adj=args.predefined_adj)
         self.pred_head = nn.Sequential(
             nn.Linear(args.main_output_dim + 5 * 12, args.hidden_dim),
@@ -23,41 +23,27 @@ class FullModel(nn.Module):
         )
 
     def forward(self, data):
-        feat = data['feat']  # B x T x N x 2 (in, out)
-        feat_in = feat[..., 0].unsqueeze(-1)   # B x T x N x 1
-        feat_out = feat[..., 1].unsqueeze(-1)  # B x T x N x 1
-
-        input_emb_in = self.input_embedding_in(feat_in)   # B x T x N x hidden_dim
-        input_emb_out = self.input_embedding_out(feat_out) # B x T x N x hidden_dim
-
+        feat = data['feat']  # B x T x N x Din
         tod_idx = data['tod_idx']  # B x T
         dow_onehot = data['dow_onehot']  # B x T x 7
         node_idx = torch.arange(0, self.args.num_nodes).to(feat.device)  # N
+        input_emb = self.input_embedding(feat)
         time_emb = self.time_embedding(tod_idx).unsqueeze(2)
-        date_emb = self.date_embedding(dow_onehot).unsqueeze(2)
+        date_emb = self.date_embedding(dow_onehot).unsqueeze(2)  # B x T x 1 x D
         node_emb = self.node_embedding(node_idx).unsqueeze(0).unsqueeze(0)
+        feature = input_emb + time_emb + date_emb + node_emb  # B x T x N x D
 
-        feature_in = input_emb_in + time_emb + date_emb + node_emb  # B x T x N x hidden_dim
-        feature_out = input_emb_out + time_emb + date_emb + node_emb  # B x T x N x hidden_dim
+        out_feat = self.main_model(feature)  # B x N x nD
 
-        out_feat_in = self.main_model(feature_in)    # B x N x nD
-        out_feat_out = self.main_model(feature_out)  # B x N x nD
-
-        out_feat = torch.cat([out_feat_in, out_feat_out], dim=-1)  # B x N x (2*nD)
-
-        # future_feature: [B, T, N, 5], lấy 5 bước cuối cùng
-        future_feature = data['target'][:, :, :, -5:]  # B x T x N x 5
-        # Đưa về [B, N, 5*12] (12 là seq_out_len)
-        future_feature = future_feature.transpose(1, 2).reshape(self.args.batch_size, self.args.num_nodes, -1)
+        future_feature = data['target'][:, :, :, -5:].transpose(1, 2).reshape(self.args.batch_size, self.args.num_nodes, -1)
         if self.args.feat_off == 1:
             future_feature = self.args.scaler.transform(future_feature)
         else:
             future_feature = self.args.scaler[0].transform(future_feature)
-
-        fusion = torch.cat([out_feat, future_feature], dim=-1)  # [B, N, main_output_dim + 5*12]
-        prediction = self.pred_head(fusion)  # [B, N, seq_out_len]
-        prediction = prediction.transpose(1, 2).unsqueeze(-1)  # [B, seq_out_len, N, 1]
+        prediction = self.pred_head(torch.cat([out_feat, future_feature], dim=-1))  # B x N x T
+        prediction = prediction.transpose(1, 2).unsqueeze(-1)  # B x T x N x 1
         return prediction
+
 
 class MainModel(nn.Module):
     def __init__(self, args, adj=None):
@@ -123,6 +109,7 @@ class MainModel(nn.Module):
         feature = torch.cat([local_feature, global_feature], dim=-1)
         return feature
 
+
 class STBackbone(nn.Module):
     def __init__(self, args, num_layers):
         super(STBackbone, self).__init__()
@@ -137,6 +124,7 @@ class STBackbone(nn.Module):
             feature_list.append(x)
         feature = torch.stack(feature_list, dim=3).max(dim=3)[0]  # B x T x N x D
         return feature
+
 
 class STGCNWithHypergraphLearning(nn.Module):
     def __init__(self, args, adj=None, depth=3, num_edges=32, hyper=None):
@@ -164,6 +152,7 @@ class STGCNWithHypergraphLearning(nn.Module):
             if i != self.depth - 1:
                 x = self.dropout(x)
         return x
+
 
 class SpatialTemporalInteractiveGCN(nn.Module):
     def __init__(self, args, adj=None, window_size=2):
@@ -198,6 +187,7 @@ class SpatialTemporalInteractiveGCN(nn.Module):
         y_final = self.norm(next_feat + x)
         return y_final
 
+
 class HypergraphLearning(nn.Module):
     def __init__(self, args, num_edges):
         super(HypergraphLearning, self).__init__()
@@ -221,6 +211,7 @@ class HypergraphLearning(nn.Module):
         y_final = self.norm(y + x)
         return y_final
 
+
 class GSL(nn.Module):
     def __init__(self, args, temporal_length):
         super(GSL, self).__init__()
@@ -235,6 +226,7 @@ class GSL(nn.Module):
         y = feat.reshape(x.size(0), x.size(1), x.size(2), x.size(3))
         y_final = self.norm(y + x)
         return y_final
+
 
 class TemporalPooling(nn.Module):
     def __init__(self, mode='mean', ratio=2):
