@@ -287,9 +287,9 @@ def random_walk_matrix(w) -> np.matrix:
 def preprocessing_for_metric():
     data = []
 
-    with h5py.File(f"NYC/NYC_Taxi.h5", 'r') as hf:
+    with h5py.File(f"NYC/NYC-Taxi.h5", 'r') as hf:
         data_pick = hf[f'taxi_pick'][:]
-    with h5py.File(f"NYC/NYC_Taxi.h5", 'r') as hf:
+    with h5py.File(f"NYC/NYC-Taxi.h5", 'r') as hf:
         data_drop = hf[f'taxi_drop'][:]
     data.append(np.stack([data_pick, data_drop], axis=2))
 
